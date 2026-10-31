@@ -172,7 +172,9 @@ function dau_plugin_update(array $cfg, array $p, $latest) {
   $tmp = DAU_PLUGTMP . '/' . $p['file'];
   if (hash('sha256', (string)@file_get_contents($tmp)) !== $v['sha']) { $res['result'] = 'blocked'; $res['error'] = 'The downloaded file changed after validation.'; return $done(); }
   $res['stage'] = 'install';
-  $r = dau_run([dau_plugin_bin(), 'update', $p['file']], 900);
+  /* `plugin update NAME.plg` downloads the plugin URL again before installing, so the file it installs is not the one that was
+     validated and hashed above. `plugin install <file>` installs exactly that file (same hooks, same version and min/max checks). */
+  $r = dau_run([dau_plugin_bin(), 'install', $tmp], 900);
   $res['stage'] = 'verify';
   $now = dau_plg_attr($p['path'], 'version');
   if ($now === $latest) {
@@ -187,9 +189,10 @@ function dau_plugin_update(array $cfg, array $p, $latest) {
 
 /** Check all installed plugins. Returns ['avail'=>[file=>latest], 'errors'=>[file=>msg]]. */
 function dau_plugins_check_all(array $cfg, array $installed) {
-  $avail = []; $errors = [];
+  $avail = []; $errors = []; $i = 0; $n = count($installed);
   foreach ($installed as $f => $p) {
     if (dau_stop_requested()) break;
+    if (function_exists('dau_phase') && !empty($GLOBALS['DAU_PROG'])) dau_phase('Checking plugins', ['done' => $i++, 'total' => $n, 'current' => $p['name']]);      // each check asks another server, so the page shows which one is being asked
     $c = dau_plugin_check($f);
     if (!$c['ok']) { $errors[$f] = $c['error']; continue; }
     if (dau_version_newer($c['latest'], $p['version'])) $avail[$f] = $c['latest'];

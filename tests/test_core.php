@@ -160,6 +160,13 @@ t('redaction removes secrets', function () {
   lacks(dau_redact('custom secret value', ['custom secret value']), 'custom secret');
 });
 
+t('redaction keeps image digests: recovery steps name the exact old image', function () {
+  $d = 'sha256:' . str_repeat('ab', 32);
+  $s = dau_redact('set Repository to "x/app@' . $d . '" and apply; token=' . str_repeat('Z', 48));
+  has($s, 'x/app@' . $d, 'digest kept'); lacks($s, str_repeat('Z', 48), 'long token still redacted');
+  lacks(dau_redact(str_repeat('ab', 32)), str_repeat('ab', 32), 'a bare 64-character token is still treated as a secret');
+});
+
 t('log is structured, redacted and bounded', function () {
   $GLOBALS['DAU_LOG_MAX'] = 2000;
   dau_log('info', 'docker', 'plex', 'update', 'ok', 'done token=SECRETVALUE', 1);
