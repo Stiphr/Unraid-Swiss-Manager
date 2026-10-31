@@ -52,7 +52,7 @@ Choose whether a failed backup blocks the update (*required*) or the update cont
 
 ## Plugin updates
 
-Uses Unraid's `plugin check` and `plugin update`. Per plugin: Auto / Notify / Ignore, delay (default 24 h), maintenance window. Before installing automatically:
+Uses Unraid's `plugin check` to download the new plugin file and `plugin install` to install that validated file (the same tool and hooks as the Plugins page). Per plugin: Auto / Notify / Ignore, delay (default 24 h), maintenance window. Before installing automatically:
 
 - plugin URL must be plain `https://` with no shell metacharacters;
 - the downloaded file must be a valid plugin, not larger than 2 MB, no external XML entities;
