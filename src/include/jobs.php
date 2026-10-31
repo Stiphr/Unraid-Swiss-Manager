@@ -27,7 +27,8 @@ function dau_hist(array &$J, $type, $name, $action, $res, $msgTrigger = '') {
     'type' => $type, 'name' => $name, 'action' => $action, 'result' => $res['result'], 'started' => $res['started'], 'finished' => $res['finished'] ?: dau_now(),
     'prev' => $res['prev'] ?? null, 'new' => $res['new'] ?? null, 'verification' => $res['verification'] ?? null,
     'attempts' => $res['attempts'] ?? 1, 'error' => $res['error'] ?? '', 'trigger' => $J['trigger'],
-    'message' => $res['next'] ?? '', 'backup' => isset($res['backup']['kinds']) ? $res['backup']['kinds'] : null,
+    'message' => trim(($res['next'] ?? '') . (!empty($res['warnings']) ? ' Warnings: ' . implode(' ', $res['warnings']) : '')),      // low disk space or a failed optional backup must be visible in Activity, not only in the log
+    'backup' => isset($res['backup']['kinds']) ? $res['backup']['kinds'] : null,
   ], $h);
 }
 

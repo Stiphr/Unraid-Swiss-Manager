@@ -52,7 +52,7 @@ Choose whether a failed backup blocks the update (*required*) or the update cont
 
 ## Plugin updates
 
-Uses Unraid's `plugin check` and `plugin update`. Per plugin: Auto / Notify / Ignore, delay (default 24 h), maintenance window. Before installing automatically:
+Uses Unraid's `plugin check` to download the new plugin file and `plugin install` to install that validated file (the same tool and hooks as the Plugins page). Per plugin: Auto / Notify / Ignore, delay (default 24 h), maintenance window. Before installing automatically:
 
 - plugin URL must be plain `https://` with no shell metacharacters;
 - the downloaded file must be a valid plugin, not larger than 2 MB, no external XML entities;
@@ -146,7 +146,7 @@ Unraid 6.9.0+ (PHP-7.4-safe syntax). Behaviour was verified against the current 
 
 ## Troubleshooting
 
-Activity tab shows history and the log. *Docker service is not running* banner: start Docker. An update stuck in *Waiting*: hover the status for the reason. Discord *Webhook rejected*: save a new URL.
+The status line in the header says at a glance whether everything is up to date, how many updates are waiting, whether something failed in the last 3 days, or what a running job is doing. The Activity tab shows the history (search it, or filter by type and result) and the log; the warnings of an update (low disk space, a failed optional backup) are part of its entry. *Docker service is not running* banner: start Docker. An update stuck in *Waiting*: hover the status for the reason. Discord *Webhook rejected*: save a new URL; *No webhook saved* on the Overview: Discord is on but no URL was entered yet.
 
 ## Removal
 

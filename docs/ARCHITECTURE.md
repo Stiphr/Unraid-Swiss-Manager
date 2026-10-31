@@ -36,7 +36,7 @@ Defects found while verifying against Unraid's source (all fixed in this release
 | Apply Docker update | `dynamix.docker.manager/scripts/update_container NAME[*NAME2]` | Pull, stop, remove, recreate from the user template. Exit code is not reliable. |
 | Installed plugins | symlinks `/var/log/plugins/*.plg` -> `/boot/config/plugins/*.plg` | Built-ins `unRAIDServer`, `unRAIDServer-` are skipped, as Unraid does. |
 | Plugin check | `plugin check NAME.plg` | Downloads `pluginURL` of the installed plg to `/tmp/plugins/NAME.plg`, prints its version. |
-| Plugin update | `plugin update NAME.plg` | Installs from `/tmp/plugins/NAME.plg`; enforces `min`/`max` Unraid version; refuses same-version reinstall. |
+| Plugin update | `plugin install /tmp/plugins/NAME.plg` | `plugin update NAME.plg` downloads `pluginURL` **again** before installing (verified in `/usr/local/sbin/plugin` on 7.3.4), so it would not install the file this plugin validated. `plugin install <file>` installs exactly that file; it enforces `min`/`max` and refuses an older or same version. |
 | Version compare | `strcmp(latest, installed) > 0` | What Unraid's own `updateall` uses; this plugin uses the same rule. |
 | OS version | `/etc/unraid-version` | |
 | OS update check | `plugin check unRAIDServer.plg` (the flow the stock UI uses for the built-in plg) | `unraidcheck` is not in the public repo, so its output format could not be verified. |
@@ -63,6 +63,14 @@ The UI links to **Tools** and names the menu entry instead of guessing a URL.
 * **Test seams are in-process only.** `dau_run()` (commands), `dau_http_post()` and `dau_now()` can be
   replaced by globals set by the test harness. Nothing reads them from the environment or the web.
 
+* **One request per tab.** `overview` is the page's one source of truth (config, run state, counts). It takes the tab being
+  opened (`tab=docker|plugins`) and includes that tab's rows, so opening the Docker tab costs one `docker inspect`, not two.
+  The standalone `docker` and `plugins` actions stay for the Dashboard tile and other callers.
+* **Progress is a file.** A job writes `/var/run/unraid-swiss-manager.progress` (phase, step, done/total, current item) and the
+  page polls `status` every 2 s while a job runs. Long loops (one `plugin check` per installed plugin) report each item.
+* **Redaction never eats a digest.** `dau_redact()` removes anything that looks like a key or token from logs, history and
+  Discord messages; `sha256:` image digests are exempt because the recovery instructions depend on them.
+
 ## 4. Safety model for plugin auto-update
 
 Auto-installing a plugin means running that author's installer as root. The plugin cannot make that safe;
@@ -73,7 +81,8 @@ it can only make it deliberate and verifiable:
   same `pluginURL` as the installed plg, same plugin name, strictly newer version, Unraid `min`/`max` compatible,
   no *new* download hosts compared with the installed plg, size limit, no external XML entities.
   Anything else is **skipped and reported**, never forced.
-* SHA-256 of the downloaded plg is recorded after validation and re-checked immediately before `plugin update`.
+* SHA-256 of the downloaded plg is recorded after validation and re-checked immediately before the install, and the install
+  uses that very file (`plugin install /tmp/plugins/NAME.plg`), never a second download.
 * The previous plg is copied to a recovery folder first (bounded retention).
 * After install the installed plg is re-read and its version must match; otherwise the update is reported as
   failed verification.
