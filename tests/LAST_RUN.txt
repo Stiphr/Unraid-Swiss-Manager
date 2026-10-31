@@ -1,4 +1,6 @@
 == 7.4-cli
-2171 assertions passed, 0 failed
+2385 assertions passed, 0 failed
 == 8.3-cli
-2171 assertions passed, 0 failed
+2385 assertions passed, 0 failed
+== 8.4-cli
+same suite, run through .github/workflows/tests.yml (php:8.4-cli); the Alpine image fails only the migration test, whose bash script uses GNU cp -n
