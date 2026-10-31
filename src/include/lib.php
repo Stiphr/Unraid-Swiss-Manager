@@ -180,7 +180,7 @@ function dau_redact($s, array $extra = []) {
   $s = preg_replace('#(https?://)[^/\s:@]+:[^/\s@]+@#i', '$1[redacted]@', $s);
   $s = preg_replace('/\b(authorization|bearer)\b[:=\s]+\S+/i', '$1 [redacted]', $s);
   $s = preg_replace('/\b([A-Za-z0-9_.-]*(?:pass(?:word|wd)?|secret|token|api[_-]?key|apikey|auth|credential|private[_-]?key)[A-Za-z0-9_.-]*)\s*[=:]\s*("[^"]*"|\'[^\']*\'|\S+)/i', '$1=[redacted]', $s);
-  $s = preg_replace('/\b[A-Za-z0-9_-]{40,}\b/', '[redacted]', $s);
+  $s = preg_replace('/\b(?<!sha256:)[A-Za-z0-9_-]{40,}\b/', '[redacted]', $s);      // long tokens look like keys; an image digest (sha256:...) is not a secret and is needed for recovery steps
   return $s;
 }
 

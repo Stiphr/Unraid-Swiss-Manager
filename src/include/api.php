@@ -78,7 +78,7 @@ switch ($action) {
     $cfg = dau_load_config($s); $st = dau_state_load();
     $rows = api_docker_rows($cfg, $st); $prow = api_plugin_rows($cfg, $st);
     $cnt = function ($r, $f) { return count(array_filter($r ?? [], $f)); };
-    out([
+    $o = [
       'config' => api_config_view($cfg), 'config_status' => $s, 'run' => dau_run_info(), 'now' => dau_now(), 'version' => DAU_VERSION, 'name' => DAU_NAME,
       'docker_up' => $rows !== null,
       'cards' => [
@@ -92,7 +92,12 @@ switch ($action) {
       'stats' => dau_stats_summary($st), 'discord' => ['last_ok' => $st['discord']['last_ok'], 'last_error' => $st['discord']['last_error'], 'invalid' => $st['discord']['invalid']],
       'checked' => ['docker' => is_file(DAU_UPDSTATUS) ? filemtime(DAU_UPDSTATUS) : 0, 'plugins' => $st['plugins']['last_check'], 'os' => $st['os']['last_check']],
       'tick_installed' => is_file(DAU_CRON), 'channel' => dau_channel_current(),
-    ]);
+    ];
+    /* the tab being opened gets its rows in the same answer: the Docker tab then needs one request (one docker inspect), not two */
+    $tab = (string)($_POST['tab'] ?? $_GET['tab'] ?? '');
+    if ($tab === 'docker') $o['docker_rows'] = $rows ?? [];
+    if ($tab === 'plugins') $o['plugin_rows'] = $prow;
+    out($o);
   }
 
   case 'docker': { $cfg = dau_load_config(); $st = dau_state_load(); $r = api_docker_rows($cfg, $st); out(['docker_up' => $r !== null, 'rows' => $r ?? []]); }
@@ -177,7 +182,8 @@ switch ($action) {
 
   case 'save_config': {
     $in = $json('config'); if ($in === null) fail('Invalid settings payload');
-    unset($in['containers'], $in['appdata']['ignore']);      // both have their own actions: an older copy in the browser must not undo them
+    unset($in['containers']);                                              // containers and the ignore list have their own actions: an older copy in the browser must not undo them
+    if (isset($in['appdata']) && is_array($in['appdata'])) unset($in['appdata']['ignore']);
     $cfg = dau_sanitize_config($in, dau_load_config());
     if (!empty($in['discord']['webhook_url'])) {
       $u = (string)$in['discord']['webhook_url'];

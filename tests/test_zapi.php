@@ -42,6 +42,19 @@ t('api: container and plugin settings are sanitised', function () {
   has(api_call('nope')['error'] ?? '', 'Unknown action');      // a non-empty needle: PHP 7.4 strpos() never matches ''
 });
 
+t('api: a malformed settings payload is refused or ignored, never a crash', function () {
+  $r = api_call('save_config', ['config' => json_encode(['appdata' => 'not an object', 'global' => ['skip_stopped' => false]])]);
+  ok(!empty($r['ok']), json_encode($r)); eq(dau_load_config()['global']['skip_stopped'], false); eq(dau_load_config()['appdata']['roots'], ['/mnt/user/appdata'], 'appdata settings untouched');
+  has(api_call('save_config', ['config' => '[1,2'])['error'] ?? '', 'Invalid');
+});
+
+t('api: the overview carries the rows of the tab being opened', function () {
+  $o = api_call('overview', ['tab' => 'docker']); ok(array_key_exists('docker_rows', $o), 'docker rows present'); eq($o['docker_rows'], []); eq($o['docker_up'], false);
+  ok(!isset($o['plugin_rows']));
+  $o = api_call('overview', ['tab' => 'plugins']); ok(isset($o['plugin_rows'])); ok(!isset($o['docker_rows']));
+  $o = api_call('overview'); ok(!isset($o['docker_rows']) && !isset($o['plugin_rows']), 'nothing extra by default');
+});
+
 t('api: import accepts an export file and keeps a copy of the old settings', function () {
   api_call('save_config', ['config' => json_encode(['global' => ['skip_stopped' => true]])]);
   $exp = api_call('export');

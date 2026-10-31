@@ -187,9 +187,10 @@ function dau_plugin_update(array $cfg, array $p, $latest) {
 
 /** Check all installed plugins. Returns ['avail'=>[file=>latest], 'errors'=>[file=>msg]]. */
 function dau_plugins_check_all(array $cfg, array $installed) {
-  $avail = []; $errors = [];
+  $avail = []; $errors = []; $i = 0; $n = count($installed);
   foreach ($installed as $f => $p) {
     if (dau_stop_requested()) break;
+    if (function_exists('dau_phase') && !empty($GLOBALS['DAU_PROG'])) dau_phase('Checking plugins', ['done' => $i++, 'total' => $n, 'current' => $p['name']]);      // each check asks another server, so the page shows which one is being asked
     $c = dau_plugin_check($f);
     if (!$c['ok']) { $errors[$f] = $c['error']; continue; }
     if (dau_version_newer($c['latest'], $p['version'])) $avail[$f] = $c['latest'];
