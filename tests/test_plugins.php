@@ -28,6 +28,7 @@ function plg_env($latest = '2', $newXml = null, array $o = []) {
       file_put_contents(DAU_PLUGTMP . '/' . $arg, $newXml ?? plg_xml($latest)); return ['out' => "plugin: checking: $arg ...\nplugin: downloading: $arg ... done\nExecuting hook script: CA_preHook\n$latest\nExecuting hook script: post_plugin_checks\n"];
     }
     if ($cmd === 'update') { if ($o['install']) copy(DAU_PLUGTMP . '/' . $arg, DAU_PLUGBOOT . '/' . $arg); return ['code' => 0]; }
+    if ($cmd === 'install') { if ($o['install']) copy($arg, DAU_PLUGBOOT . '/' . basename($arg)); return ['code' => 0]; }
     if ($cmd === 'changes') return ['out' => "Fixes things\n"];
     return null;
   });
@@ -67,6 +68,8 @@ t('plugins: successful update, verified by re-reading the installed file', funct
   $i = plg_env(); dau_plugins_check_all(dau_defaults(), $i);
   $r = dau_plugin_update(dau_defaults(), $i['foo.plg'], '2');
   eq($r['result'], 'updated'); eq($r['verification']['result'], 'version_matches');
+  /* the file that was validated is the file that is installed: `plugin update` would download it again */
+  $c = calls_matching(' install '); eq(count($c), 1); eq(end($c[0]), DAU_PLUGTMP . '/foo.plg'); eq(count(calls_matching(' update foo.plg')), 0);
   ok(is_file(DAU_RECOVERY . '/foo-1.plg'), 'recovery copy kept');
 });
 
@@ -74,7 +77,7 @@ t('plugins: failed install is detected despite exit code 0, no rollback attempte
   $i = plg_env('2', null, ['install' => false]); dau_plugins_check_all(dau_defaults(), $i);
   $r = dau_plugin_update(dau_defaults(), $i['foo.plg'], '2');
   eq($r['result'], 'failed'); has($r['next'], 'Not rolled back'); has($r['next'], 'foo-1.plg');
-  eq(count(calls_matching('plugin update')), 1);
+  eq(count(calls_matching('plugin install')), 1);
 });
 
 t('plugins: parsing a plg leaves XML file loading working (PHP 7 entity loader is restored)', function () {
@@ -94,7 +97,7 @@ t('plugins: validation blocks unsafe updates', function () {
   foreach ($cases as $k => list($xml, $needle)) {
     $i = plg_env('2', $xml); dau_plugins_check_all(dau_defaults(), $i);
     $r = dau_plugin_update(dau_defaults(), $i['foo.plg'], '2');
-    eq($r['result'], 'blocked', $k); has($r['error'], $needle, $k); eq(count(calls_matching('plugin update')), 0, "$k: nothing installed");
+    eq($r['result'], 'blocked', $k); has($r['error'], $needle, $k); eq(count(calls_matching('plugin install')), 0, "$k: nothing installed");
   }
 });
 

@@ -14,6 +14,7 @@
 - Fix: the recovery step of a failed container update named the old image as "x/app@sha256:[redacted]" in Activity and Discord, because the digest was taken for a secret. Digests are kept now; long tokens are still redacted.
 - Fix: a container update that verified fine after Unraid's own routine timed out was recorded as updated with an error text. The timeout is now a warning on the entry; it only becomes part of the error when the container really failed.
 - Fix: warnings of an update (low disk space, a failed optional backup) were only in the log. They are now part of the Activity entry.
+- Safety: an automatic plugin update now installs exactly the file that passed the safety checks. Unraid's "plugin update" downloads the plugin again before installing, so the installed file could have differed from the checked one.
 - Fix: a malformed settings request could end in a server error instead of a clear refusal.
 - Faster: opening the Docker or Plugins tab sends one request (one docker inspect) instead of two.
 - The Working bar now shows which plugin is being checked and how many are left; a check of many plugins no longer looks stuck.
@@ -2780,7 +2781,9 @@ function dau_plugin_update(array $cfg, array $p, $latest) {
   $tmp = DAU_PLUGTMP . '/' . $p['file'];
   if (hash('sha256', (string)@file_get_contents($tmp)) !== $v['sha']) { $res['result'] = 'blocked'; $res['error'] = 'The downloaded file changed after validation.'; return $done(); }
   $res['stage'] = 'install';
-  $r = dau_run([dau_plugin_bin(), 'update', $p['file']], 900);
+  /* `plugin update NAME.plg` downloads the plugin URL again before installing, so the file it installs is not the one that was
+     validated and hashed above. `plugin install <file>` installs exactly that file (same hooks, same version and min/max checks). */
+  $r = dau_run([dau_plugin_bin(), 'install', $tmp], 900);
   $res['stage'] = 'verify';
   $now = dau_plg_attr($p['path'], 'version');
   if ($now === $latest) {
@@ -2813,7 +2816,7 @@ function dau_plugin_slots(array $cfg) {
   return $s ? ['plugins' => ['sched' => $s, 'names' => ['*']]] : [];
 }
 ]]></INLINE>
-<SHA256>8f16f65cc61a7f7e11ba97528a3a76f3bcd1af75be7f64b2f265fa3684b4fb02</SHA256>
+<SHA256>90ac9716081ab3b075a775fc56a939d9e1dc5f17cc176e24ec0ed6b467c70178</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/os.php" Mode="0644">

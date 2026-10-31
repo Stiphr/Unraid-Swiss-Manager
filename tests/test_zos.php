@@ -23,6 +23,7 @@ function os_env($latest = '7.4.0', array $o = []) {
     if (in_array($cmd, ['version', 'pluginURL', 'min', 'max'], true)) { $x = dau_plg_parse(file_get_contents($arg)); return $x ? ['out' => (string)$x[$cmd] . "\n"] : ['code' => 1]; }
     if ($cmd === 'check') { file_put_contents(DAU_PLUGTMP . '/' . $arg, os_xml($latest, $o['url'])); return ['out' => "plugin: checking\n"]; }
     if ($cmd === 'update') { if ($o['install']) copy(DAU_PLUGTMP . '/' . $arg, DAU_PLUGBOOT . '/' . $arg); return ['code' => 0]; }
+    if ($cmd === 'install') { if ($o['install']) copy($arg, DAU_PLUGBOOT . '/' . basename($arg)); return ['code' => 0]; }
     if ($cmd === 'changes') return ['out' => "Release notes\n"];
     return null;
   });
@@ -225,10 +226,11 @@ function wf_env($o = []) {
   file_put_contents(DAU_PLUGBOOT . '/foo.plg', plg_xml('1')); @symlink(DAU_PLUGBOOT . '/foo.plg', DAU_PLUGLINKS . '/foo.plg');
   $osMock = $GLOBALS['DAU_EXEC_MOCK'];
   $GLOBALS['DAU_EXEC_MOCK'] = function ($a, $i) use ($o, $osMock, $base) {
-    if (basename($a[0]) === 'plugin' && ($a[2] ?? '') === 'foo.plg' || (basename($a[0]) === 'plugin' && ($a[1] ?? '') === 'check' && ($a[2] ?? '') === 'foo.plg')) {
+    if (basename($a[0]) === 'plugin' && basename((string)($a[2] ?? '')) === 'foo.plg') {      // check foo.plg, update foo.plg, install /tmp/plugins/foo.plg
       $GLOBALS['CALLS'][] = $a; $cmd = $a[1];
       if ($cmd === 'check') { file_put_contents(DAU_PLUGTMP . '/foo.plg', plg_xml('2')); return ['code' => 0, 'out' => '', 'err' => '', 'timeout' => false, 'ran' => true]; }
       if ($cmd === 'update') { if ($o['foo_ok']) copy(DAU_PLUGTMP . '/foo.plg', DAU_PLUGBOOT . '/foo.plg'); if ($o['stop_on_foo']) touch(DAU_STOPFLAG); return ['code' => 0, 'out' => '', 'err' => '', 'timeout' => false, 'ran' => true]; }
+      if ($cmd === 'install') { if ($o['foo_ok']) copy($a[2], DAU_PLUGBOOT . '/foo.plg'); if ($o['stop_on_foo']) touch(DAU_STOPFLAG); return ['code' => 0, 'out' => '', 'err' => '', 'timeout' => false, 'ran' => true]; }
     }
     if (basename($a[0]) === 'plugin' && in_array($a[1] ?? '', ['version', 'pluginURL', 'min', 'max'], true) && strpos($a[2] ?? '', 'foo.plg') !== false) {
       $x = dau_plg_parse(file_get_contents($a[2])); return ['code' => 0, 'out' => (string)$x[$a[1]] . "\n", 'err' => '', 'timeout' => false, 'ran' => true];
@@ -256,7 +258,7 @@ t('workflow: defaults and settings validation', function () {
 
 t('workflow: plugins are updated before the OS; Docker is left alone by default', function () {
   wf_env(['docker' => true]); wf_cfg('install'); job_set_update(); eq(os_tick(), 0);
-  $p = call_idx('plugin update foo.plg'); $o = call_idx('plugin update unRAIDServer.plg');
+  $p = call_idx('plugin install /tmp/plugins/foo.plg'); $o = call_idx('plugin update unRAIDServer.plg');
   ok($p !== null && $o !== null && $p < $o, 'plugin first, then the OS');
   eq(count(calls_matching('update_container')), 0, 'Docker not touched');
   $os = dau_state_load()['os']; eq($os['pending']['to'], '7.4.0'); eq($os['last_report']['result'], 'ok'); eq($os['last_report']['plugins']['updated'], 1); eq($os['last_report']['docker'], null); eq($os['workflow'], null);
@@ -298,10 +300,10 @@ t('workflow: failed system check stops the OS update', function () {
 
 t('workflow: confirmation pauses before the install; confirm continues, abort cancels', function () {
   wf_env(); wf_cfg('install_reboot', ['confirm' => true]); $GLOBALS['SENT'] = [];
-  os_tick(); eq(count(calls_matching('plugin update unRAIDServer.plg')), 0, 'paused'); eq(count(calls_matching('plugin update foo.plg')), 1, 'prerequisites ran');
+  os_tick(); eq(count(calls_matching('plugin update unRAIDServer.plg')), 0, 'paused'); eq(count(calls_matching('plugin install /tmp/plugins/foo.plg')), 1, 'prerequisites ran');
   $wf = dau_state_load()['os']['workflow']; eq($wf['state'], 'awaiting_confirmation'); eq($wf['reboot'], true);
   eq(dau_os_eval(dau_load_config(), dau_state_load(), dau_now(), false)['state'], 'awaiting_confirmation');
-  $GLOBALS['DAU_NOW'] += 3600; os_tick(); eq(count(calls_matching('plugin update foo.plg')), 1, 'not repeated while waiting'); eq(count(calls_matching('plugin update unRAIDServer.plg')), 0);
+  $GLOBALS['DAU_NOW'] += 3600; os_tick(); eq(count(calls_matching('plugin install /tmp/plugins/foo.plg')), 1, 'not repeated while waiting'); eq(count(calls_matching('plugin update unRAIDServer.plg')), 0);
   eq(dau_job_main('os_confirm'), 0); eq(count(calls_matching('plugin update unRAIDServer.plg')), 1, 'installed after the confirmation'); eq(count(calls_matching('/sbin/reboot -n')), 1, 'reboot as authorised');
   eq(dau_state_load()['os']['workflow'], null);
   /* abort */
@@ -320,11 +322,11 @@ t('workflow: stop request aborts before the OS install', function () {
 
 t('workflow: manual install uses the choices from the dialog; reboot stays explicit', function () {
   wf_env(); wf_cfg('notify'); eq(dau_job_main('os_install', ['reboot' => false, 'pre_plugins' => false, 'pre_docker' => false]), 0);
-  eq(count(calls_matching('plugin update foo.plg')), 0, 'plugins skipped when unticked'); eq(count(calls_matching('plugin update unRAIDServer.plg')), 1); eq(count(calls_matching('/sbin/reboot')), 0);
+  eq(count(calls_matching('plugin install /tmp/plugins/foo.plg')), 0, 'plugins skipped when unticked'); eq(count(calls_matching('plugin update unRAIDServer.plg')), 1); eq(count(calls_matching('/sbin/reboot')), 0);
   wf_env(); wf_cfg('notify'); dau_job_main('os_install', ['reboot' => false, 'pre_plugins' => true, 'pre_docker' => false]);
-  ok(call_idx('plugin update foo.plg') < call_idx('plugin update unRAIDServer.plg'), 'plugins first'); eq(count(calls_matching('/sbin/reboot')), 0, 'no reboot without explicit authorisation');
+  ok(call_idx('plugin install /tmp/plugins/foo.plg') < call_idx('plugin update unRAIDServer.plg'), 'plugins first'); eq(count(calls_matching('/sbin/reboot')), 0, 'no reboot without explicit authorisation');
   /* default notify mode never starts the workflow by itself */
-  wf_env(); wf_cfg('notify'); os_tick(); eq(count(calls_matching('plugin update')), 0);
+  wf_env(); wf_cfg('notify'); os_tick(); eq(count(calls_matching('plugin update')) + count(calls_matching('plugin install')), 0);
 });
 
 t('workflow: interrupted workflow is recorded, never resumed blindly; no duplicate jobs', function () {
