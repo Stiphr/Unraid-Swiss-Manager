@@ -226,7 +226,7 @@ t('build: unknown flags and a beta version without --beta build nothing', functi
 
 t('ui: toasts and dialogs live outside the page that render() rebuilds; polling follows every job and ends with it', function () {
   $js = file_get_contents(__DIR__ . '/../src/assets/app.js');
-  has($js, 'layer.appendChild(bg)'); has($js, 'layer.appendChild(t)'); lacks($js, 'root.appendChild(bg)'); lacks($js, 'root.appendChild(t)');
+  has($js, 'layer.appendChild(bg)'); has($js, 'layer.appendChild(toasts)'); has($js, 'toasts.appendChild(t)'); lacks($js, 'root.appendChild(bg)'); lacks($js, 'root.appendChild(t)');
   has($js, 'if (busy) startPoll();'); has($js, 'S.pollBusy'); has($js, "function keep(k)");
   $page = file_get_contents(__DIR__ . '/../src/include/page.php'); has($page, 'window.DAU_THEME');
   $dash = file_get_contents(__DIR__ . '/../src/UnraidSwissManagerDash.page'); has($dash, 'Cond="version_compare'); has($dash, 'dau-w-go');

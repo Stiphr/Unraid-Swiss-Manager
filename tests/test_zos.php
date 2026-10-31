@@ -421,5 +421,5 @@ t('rename: no leftovers of the old name in the plugin code or the dashboard', fu
   }
   ok(is_file(__DIR__ . '/../src/UnraidSwissManager.page') && !is_file(__DIR__ . '/../src/DockerAutoUpdate.page'));
   $css = file_get_contents(__DIR__ . '/../src/assets/app.css'); has($css, '.dau .ver{'); has($css, 'var(--accent)');
-  $js = file_get_contents(__DIR__ . '/../src/assets/app.js'); has($js, "class: 'ver'"); has($js, "'Plugin version ' + S.ov.version"); lacks($js, 'Build ');
+  $js = file_get_contents(__DIR__ . '/../src/assets/app.js'); has($js, "class: 'ver'"); has($js, "'v' + S.ov.version"); lacks($js, 'Build ');
 });
