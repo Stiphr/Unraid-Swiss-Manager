@@ -375,7 +375,7 @@ function dau_docker_update(array $cfg, $name, array $c) {
   /* apply with Unraid's own routine (keeps the template, network and extra settings). From here on, never auto-retry. */
   $out['stage'] = 'apply'; dau_stage('apply');
   $a = dau_run([DAU_PHP, $script, rawurlencode($name)], DAU_APPLY_TIMEOUT);
-  if ($a['timeout']) { $out['error'] = 'Unraid\'s update routine did not finish in ' . DAU_APPLY_TIMEOUT . ' s.'; $out['next'] = 'Check the container in the Docker tab before doing anything else.'; }
+  if ($a['timeout']) $out['warnings'][] = 'Unraid\'s update routine did not finish in ' . DAU_APPLY_TIMEOUT . ' s; the result below comes from checking the container afterwards.';
 
   /* verify, independent of the exit code */
   $out['stage'] = 'verify'; dau_stage('verify');
@@ -399,7 +399,7 @@ function dau_docker_update(array $cfg, $name, array $c) {
   }
   $out['result'] = 'failed';
   $out['error'] = $v['detail'];
-  $out['next'] = 'The previous image was kept. Check the container\'s logs. To go back: edit the container, set Repository to "' . $prevRef . '" and apply. See the README section on recovery.';
+  $out['next'] = ($a['timeout'] ? 'Unraid\'s update routine did not finish in time. ' : '') . 'The previous image was kept. Check the container\'s logs. To go back: edit the container, set Repository to "' . $prevRef . '" and apply. See the README section on recovery.';
   /* Unraid's routine gave up before the new container was running: a container that was running must not stay down because of that */
   if ($wasRunning && ($v['result'] === 'image_mismatch' || $v['result'] === 'not_started' || ($v['result'] === 'failed_to_start' && ($a['timeout'] || $a['code'] !== 0))) && dau_docker_restore($name) === 'started') $out['next'] = 'It was started again. ' . $out['next'];
   return $done();
