@@ -76,6 +76,26 @@ t('docker: successful update with health, cleanup of the old image only', functi
   eq(count(calls_matching('--force')), 0); eq(count(calls_matching('prune')), 0);
 });
 
+t('docker: Unraid\'s update routine timing out is a warning when the container verifies fine, part of the error when it does not', function () {
+  $S = fake_docker_env(['final' => ['Status' => 'running', 'Running' => true, 'Health' => 'healthy']]);
+  $inner = $GLOBALS['DAU_EXEC_MOCK'];
+  $GLOBALS['DAU_EXEC_MOCK'] = function ($a, $in) use ($inner) { $r = $inner($a, $in); if (strpos(implode(' ', $a), 'update_container') !== false) return ['code' => 124, 'timeout' => true]; return $r; };
+  $r = dau_docker_update(dcfg(), 'app', app_c());
+  eq($r['result'], 'updated'); eq($r['error'], '', 'a verified update carries no error'); has(implode(' ', $r['warnings']), 'did not finish');
+  $S = fake_docker_env(['final' => ['Status' => 'exited', 'Running' => false]]);
+  $inner = $GLOBALS['DAU_EXEC_MOCK'];
+  $GLOBALS['DAU_EXEC_MOCK'] = function ($a, $in) use ($inner) { $r = $inner($a, $in); if (strpos(implode(' ', $a), 'update_container') !== false) return ['code' => 124, 'timeout' => true]; return $r; };
+  $r = dau_docker_update(dcfg(), 'app', app_c());
+  eq($r['result'], 'failed'); has($r['next'], 'did not finish in time'); has($r['error'], 'stopped right after');
+});
+
+t('docker: warnings reach the Activity entry, and the recovery digest is not redacted there', function () {
+  $J = dau_job_new('manual', dau_defaults(), dau_state_defaults());
+  $d = 'sha256:' . str_repeat('cd', 32);
+  dau_hist($J, 'docker', 'app', 'update', ['result' => 'failed', 'started' => 1, 'finished' => 2, 'error' => 'x', 'next' => 'Set Repository to "x/app@' . $d . '".', 'warnings' => ['Low disk space for Docker: 2 GB free']]);
+  $h = dau_history_load()[0]; has($h['message'], 'Low disk space'); has($h['message'], 'x/app@' . $d);
+});
+
 t('docker: no healthcheck is not a failure', function () {
   fake_docker_env(); $r = dau_docker_update(dcfg(), 'app', app_c());
   eq($r['result'], 'updated'); eq($r['verification']['result'], 'running_no_healthcheck'); ok($r['verification']['ok']);

@@ -62,4 +62,6 @@ python3 build.py 2026.10.28b1 --beta   # beta build (commit it to the beta branc
 php tests/run.php                      # all tests, fully mocked (Linux; never on a real Unraid server)
 ```
 
+Every push and pull request runs the same checks on GitHub Actions (`.github/workflows/tests.yml`): PHP syntax, the test suite on PHP 7.4, 8.3 and 8.4, and a plugin build.
+
 Branches: `stable` is what the Stable address installs, `beta` what the Beta address installs. Versions are dates (`2026.10.28`, a letter for a second release that day, `b1`, `b2`… for betas). Unraid compares them as text, so each release must sort after the previous one on its branch.

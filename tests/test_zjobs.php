@@ -125,12 +125,12 @@ t('jobs: interrupted job is recorded after a crash', function () {
 
 t('jobs: plugin job - auto off by default means notify only', function () {
   plg_env('2'); job_cfg(function (&$c) {});
-  dau_job_main('check'); eq(count(calls_matching('plugin update')), 0);
+  dau_job_main('check'); eq(count(calls_matching('plugin install')), 0);
   eq(dau_state_load()['plugins']['available'], ['foo.plg' => '2', DAU_SELF_PLG => '2']);
   $c = dau_load_config(); $c['plugins']['auto_update'] = true; $c['plugins']['default_policy'] = 'auto'; $c['plugins']['delay_hours'] = 0; dau_save_config($c);
   dau_job_main('plugins', ['names' => []]);   // manual with no names = nothing selected
-  eq(count(calls_matching('plugin update')), 0);
-  dau_job_main('plugins', ['names' => ['foo.plg']]); eq(count(calls_matching('plugin update')), 1);
+  eq(count(calls_matching('plugin install')), 0);
+  dau_job_main('plugins', ['names' => ['foo.plg']]); eq(count(calls_matching('plugin install')), 1);
 });
 
 t('jobs: cron is one dispatcher line, removed when nothing scheduled', function () {
