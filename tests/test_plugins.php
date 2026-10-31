@@ -39,6 +39,15 @@ t('plugins: detection skips Unraid itself, marks self', function () {
   $c = dau_plugins_check_all(dau_defaults(), $i); ok(isset($c['avail']['foo.plg']));
 });
 
+t('plugins: a running job reports which plugin is being checked', function () {
+  $i = plg_env();
+  $GLOBALS['DAU_PROG'] = ['running' => true, 'phase' => 'Checking plugins', 'ts' => dau_now()];
+  dau_plugins_check_all(dau_defaults(), $i);
+  $p = dau_read_json(DAU_PROGRESS, []); eq($p['total'] ?? null, 2); eq($p['phase'] ?? '', 'Checking plugins'); ok(in_array($p['current'] ?? '', ['foo', 'unraid-swiss-manager'], true), 'names the plugin');
+  unset($GLOBALS['DAU_PROG']); @unlink(DAU_PROGRESS);
+  dau_plugins_check_all(dau_defaults(), $i); ok(!is_file(DAU_PROGRESS), 'outside a job nothing is written');
+});
+
 t('plugins: default is OFF; policy matrix', function () {
   $cfg = dau_defaults(); eq($cfg['plugins']['auto_update'], false);
   $i = plg_env(); $p = $i['foo.plg']; $st = dau_state_defaults();
