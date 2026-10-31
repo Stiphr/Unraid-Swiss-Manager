@@ -1,3 +1,15 @@
+###2026.11.03
+- Fix: the recovery step of a failed container update named the old image as "x/app@sha256:[redacted]" in Activity and Discord, because the digest was taken for a secret. Digests are kept now; long tokens are still redacted.
+- Fix: a container update that verified fine after Unraid's own routine timed out was recorded as updated with an error text. The timeout is now a warning on the entry; it only becomes part of the error when the container really failed.
+- Fix: warnings of an update (low disk space, a failed optional backup) were only in the log. They are now part of the Activity entry.
+- Fix: a malformed settings request could end in a server error instead of a clear refusal.
+- Faster: opening the Docker or Plugins tab sends one request (one docker inspect) instead of two.
+- The Working bar now shows which plugin is being checked and how many are left; a check of many plugins no longer looks stuck.
+- Activity has a search box and filters by type and result; results are written without underscores.
+- Redesigned pages: one set of spacing, radius and type sizes everywhere; a status line in the header (up to date, updates waiting, failures, working); icons on the tabs and section titles; a count of shown and selected rows; clear empty states instead of blank tables; dialogs with a close button that also close with Escape; a quick navigation at the top of Settings; a warning when Discord is on without a webhook.
+- Phones and tablets: tabs show icons with a text label on wider screens; wide tables scroll sideways on a laptop instead of squeezing their columns, and become cards on a phone; the duplicate Last run card is gone (the header shows it).
+- The schedule and delay of a container moved into its Policy column, so the Docker table fits a laptop screen.
+- Tests: a GitHub Actions workflow runs the syntax check, the test suite on PHP 7.4, 8.3 and 8.4, and a plugin build on every push and pull request.
 ###2026.11.02
 - Fix: official Docker Hub images (mysql, postgres, mariadb, adminer and the like) always showed "Status unknown" and never updated, because Unraid files them under library/.
 - Fix: a daemon started by a plugin update could hold the job lock for as long as it ran. Every later job, scheduled ones included, was then skipped and the page said a job was running.

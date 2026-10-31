@@ -63,6 +63,14 @@ The UI links to **Tools** and names the menu entry instead of guessing a URL.
 * **Test seams are in-process only.** `dau_run()` (commands), `dau_http_post()` and `dau_now()` can be
   replaced by globals set by the test harness. Nothing reads them from the environment or the web.
 
+* **One request per tab.** `overview` is the page's one source of truth (config, run state, counts). It takes the tab being
+  opened (`tab=docker|plugins`) and includes that tab's rows, so opening the Docker tab costs one `docker inspect`, not two.
+  The standalone `docker` and `plugins` actions stay for the Dashboard tile and other callers.
+* **Progress is a file.** A job writes `/var/run/unraid-swiss-manager.progress` (phase, step, done/total, current item) and the
+  page polls `status` every 2 s while a job runs. Long loops (one `plugin check` per installed plugin) report each item.
+* **Redaction never eats a digest.** `dau_redact()` removes anything that looks like a key or token from logs, history and
+  Discord messages; `sha256:` image digests are exempt because the recovery instructions depend on them.
+
 ## 4. Safety model for plugin auto-update
 
 Auto-installing a plugin means running that author's installer as root. The plugin cannot make that safe;

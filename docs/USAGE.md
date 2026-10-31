@@ -146,7 +146,7 @@ Unraid 6.9.0+ (PHP-7.4-safe syntax). Behaviour was verified against the current 
 
 ## Troubleshooting
 
-Activity tab shows history and the log. *Docker service is not running* banner: start Docker. An update stuck in *Waiting*: hover the status for the reason. Discord *Webhook rejected*: save a new URL.
+The status line in the header says at a glance whether everything is up to date, how many updates are waiting, whether something failed in the last 3 days, or what a running job is doing. The Activity tab shows the history (search it, or filter by type and result) and the log; the warnings of an update (low disk space, a failed optional backup) are part of its entry. *Docker service is not running* banner: start Docker. An update stuck in *Waiting*: hover the status for the reason. Discord *Webhook rejected*: save a new URL; *No webhook saved* on the Overview: Discord is on but no URL was entered yet.
 
 ## Removal
 

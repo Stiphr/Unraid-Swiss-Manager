@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+    branches: [stable, beta]
+  pull_request:
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    container: php:${{ matrix.php }}-cli
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        run: |
+          for f in src/include/*.php src/scripts/run.php tests/*.php; do php -l "$f" > /dev/null || exit 1; done
+      - name: Run the test suite (fully mocked; never on a real Unraid server)
+        run: php tests/run.php
+
+  build:
+    name: Plugin build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the plugin file and check it is well-formed XML
+        run: |
+          python3 build.py 2026.01.01
+          python3 - <<'PY'
+          import xml.dom.minidom, pathlib
+          for f in ['unraid-swiss-manager.plg', 'unraid-autoupdater.plg', 'docker.autoupdate.plg']:
+              xml.dom.minidom.parseString(pathlib.Path(f).read_bytes()); print(f, 'ok')
+          PY
+      - name: JavaScript syntax check
+        run: node --check src/assets/app.js
