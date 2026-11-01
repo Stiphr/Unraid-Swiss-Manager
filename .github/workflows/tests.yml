@@ -21,10 +21,6 @@ jobs:
           for f in src/include/*.php src/scripts/run.php tests/*.php; do php -l "$f" > /dev/null || exit 1; done
       - name: Run the test suite (fully mocked; never on a real Unraid server)
         run: php tests/run.php
-      - name: Assertions per test file (to spot a file that is skipped in this environment)
-        if: always()
-        run: |
-          for f in tests/test_*.php; do printf '%s: ' "$f"; php tests/run.php "$(basename "$f" .php)" 2>&1 | tail -1; done
 
   build:
     name: Plugin build
