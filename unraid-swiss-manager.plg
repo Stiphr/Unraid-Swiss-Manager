@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name    "unraid-swiss-manager">
 <!ENTITY author  "Stiphr">
-<!ENTITY version "2026.11.03">
+<!ENTITY version "2026.11.04">
 <!ENTITY emhttp  "/usr/local/emhttp/plugins/&name;">
 <!ENTITY flash   "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/Stiphr/Unraid-Swiss-Manager/refs/heads/stable/unraid-swiss-manager.plg">
@@ -10,6 +10,9 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" launch="Settings/UnraidSwissManager" min="6.9.0" icon="unraid-swiss-manager.png">
 
 <CHANGES>
+###2026.11.04
+- New: Smart cleanup on the Cleanup tab. Safe picks only items marked Eligible, quarantines the folders and removes only nameless images; Unsafe picks everything the scan found, orphaned images with a name, leftover containers and volumes included, and deletes folders for good when Safe mode is off. Both scan first when needed and show the full list of operations before anything happens.
+- New: Select all (every section, volumes included) next to Select all eligible, and a checkbox in each section's table header that selects that section.
 ###2026.11.03
 - Fix: the recovery step of a failed container update named the old image as "x/app@sha256:[redacted]" in Activity and Discord, because the digest was taken for a secret. Digests are kept now; long tokens are still redacted.
 - Fix: a container update that verified fine after Unraid's own routine timed out was recorded as updated with an error text. The timeout is now a warning on the entry; it only becomes part of the error when the container really failed.
@@ -385,7 +388,7 @@ $dau_v = '?v=' . (int)@filemtime('/usr/local/emhttp/plugins/unraid-swiss-manager
 if (!defined('DAU_LIB_LOADED')) {
 define('DAU_LIB_LOADED', 1);
 
-define('DAU_VERSION',   '2026.11.03');   // the one version shown everywhere (date based, e.g. 2026.10.30a; Unraid compares it as a string)
+define('DAU_VERSION',   '2026.11.04');   // the one version shown everywhere (date based, e.g. 2026.10.30a; Unraid compares it as a string)
 define('DAU_NAME',      'Unraid Swiss Manager');
 define('DAU_ROOT',      '/usr/local/emhttp/plugins/unraid-swiss-manager');
 define('DAU_DIR',       '/boot/config/plugins/unraid-swiss-manager');
@@ -702,7 +705,7 @@ foreach (['config', 'schedule', 'state', 'discord', 'backup', 'backups', 'docker
 }
 unset($__m, $__f);
 ]]></INLINE>
-<SHA256>23f3d07445460feef9779e09515cf7f49c7581b7b7616645c29da4c334e82d01</SHA256>
+<SHA256>c9532e365b30105d02f9acbfe67d3594a65f432aac831800bda3a951e6d41043</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/config.php" Mode="0644">
@@ -5214,6 +5217,8 @@ exit(64);
 .dau .cops{margin:0 0 10px;padding-left:18px}.dau .cops li{margin:6px 0}
 .dau .cbar{position:sticky;bottom:0;z-index:5;display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 12px;margin-top:14px;background:var(--panel);border:1px solid var(--line-2);border-radius:var(--r);box-shadow:0 -6px 24px rgba(0,0,0,.18)}
 .dau .cbar .grow{flex:1;min-width:160px}
+.dau .smart{display:flex;gap:12px 16px;align-items:center;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.dau th input[type=checkbox]{margin:0}
 
 /* ---------- settings: section navigation ---------- */
 .dau .secnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;position:sticky;top:0;z-index:4;padding:8px 0;background:var(--bg,transparent)}
@@ -5274,7 +5279,7 @@ exit(64);
 }
 @media (prefers-reduced-motion:reduce){.dau .progress i,.dau .spinner,.dau .chip .dot,.dau .modal{animation:none}}
 ]]></INLINE>
-<SHA256>8fcb1cd7e41929696bd2e8376352564851da220c2ab241213746eafe1fdc31f7</SHA256>
+<SHA256>4b78ffaa63eee3f1963706b21425797360308084526b8200aca345096a07e246</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/assets/app.js" Mode="0644">
@@ -5911,7 +5916,9 @@ exit(64);
   function statusBadge(st) { var s = STATUS[st] || ['', st]; return h('span', { class: 'badge ' + s[0] }, s[1]); }
   function moreInfo(rows) { var d = h('details', { class: 'more' }, h('summary', null, 'Technical details')); rows.forEach(function (r) { d.appendChild(h('div', { class: 'sm' }, h('span', { class: 'muted' }, r[0] + ': '), h('span', { class: 'mono' }, r[1]))); }); return d; }
   function ctable(cat, list) {
-    var t = h('table', { class: 'resp' }); t.appendChild(h('thead', null, h('tr', null, h('th', null, ''), h('th', null, 'Item'), h('th', null, 'Status'), h('th', null, 'Size'), h('th', null, ''))));
+    var pick = list.filter(pickable), allOn = pick.length > 0 && pick.every(function (it) { return !!sel()[cat][it.key]; });
+    var all = h('input', { type: 'checkbox', checked: allOn, disabled: !pick.length || S.cbusy, 'aria-label': 'Select every item in this section', title: 'Select every item in this section', onchange: function () { pick.forEach(function (it) { sel()[cat][it.key] = all.checked; }); render(); } });
+    var t = h('table', { class: 'resp' }); t.appendChild(h('thead', null, h('tr', null, h('th', null, all), h('th', null, 'Item'), h('th', null, 'Status'), h('th', null, 'Size'), h('th', null, ''))));
     var tb = h('tbody'); t.appendChild(tb);
     list.forEach(function (it) {
       var can = pickable(it) && !S.cbusy;
@@ -5956,7 +5963,9 @@ exit(64);
       h('div', { class: 'k muted' }, at ? (scanned ? 'Last scan: just now' : 'Last scan: ' + ago(at)) : 'Not scanned yet'),
       h('div', { class: 'big' }, at ? cands + ' item' + (cands === 1 ? '' : 's') + ' to review' : '–'),
       h('div', { class: 'muted sm' }, at ? 'Estimated size: ' + bytes(size) + (scanned ? '' : ' (from the last scan)') + ' · Status: ' + statusText : 'Scanning only looks. Nothing is removed until you select items and confirm. Status: ' + statusText)),
-      h('button', { class: 'btn pri', disabled: busy, title: busy ? 'Wait until the current job has finished' : '', onclick: scanAll }, S.cscanning ? 'Scanning…' : 'Scan for Cleanup Items'))));
+      h('button', { class: 'btn pri', disabled: busy, title: busy ? 'Wait until the current job has finished' : '', onclick: scanAll }, S.cscanning ? 'Scanning…' : 'Scan for Cleanup Items')),
+      h('div', { class: 'smart' }, h('div', { class: 'grow' }, h('b', null, 'Smart cleanup'), h('div', { class: 'muted sm' }, 'Picks the items for you and shows what it would do before anything happens. Safe: only items marked Eligible; folders go to quarantine and only nameless images are removed. Unsafe: everything the scan found, also "Review first" items, named images, leftover containers and volumes; folders are deleted for good when Safe mode is off.')),
+        h('div', { class: 'inl' }, h('button', { class: 'btn', disabled: busy, onclick: function () { smartCleanup('safe'); } }, icon('fa-magic'), 'Smart cleanup (safe)'), h('button', { class: 'btn danger', disabled: busy, onclick: function () { smartCleanup('unsafe'); } }, icon('fa-exclamation-triangle'), 'Smart cleanup (unsafe)')))));
     if (S.cerr && S.cerr.all) w.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'The scan could not run. '), S.cerr.all + ' Wait for the other job to finish, or reload the page, then scan again.'));
     if (S.cerr && S.cerr.docker) w.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'Docker could not be inspected. '), S.cerr.docker + ' Images, volumes and containers (and the check which appdata folders are in use) need the Docker service. Start it under Settings > Docker, then scan again.'));
     else if (S.cerr && S.cerr.app) w.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'Appdata could not be inspected. '), S.cerr.app));
@@ -5990,7 +5999,7 @@ exit(64);
     } else secApp.appendChild(h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
     var secImg = h('div'); secImg.appendChild(h('div', { class: 'banner' }, 'Dangling images have no name; unused images were downloaded once and no container uses them now. Images that a container uses (' + (d ? d.in_use_images : 'N') + ' right now) are never listed. Volumes and appdata are never touched by image cleanup.'));
     secImg.appendChild(d ? (items('img').length ? ctable('img', items('img')) : h('p', { class: 'muted' }, 'No unused images.')) : h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
-    var secVol = h('div'); secVol.appendChild(h('div', { class: 'banner warn' }, h('b', null, 'Volumes hold data. '), 'Removing one deletes its data and cannot be undone. None is selected for you and Select all eligible never picks them. Docker refuses to remove a volume that is in use.'));
+    var secVol = h('div'); secVol.appendChild(h('div', { class: 'banner warn' }, h('b', null, 'Volumes hold data. '), 'Removing one deletes its data and cannot be undone. Select all eligible and Smart cleanup (safe) never pick them; Select all, the section checkbox and Smart cleanup (unsafe) do. Docker refuses to remove a volume that is in use.'));
     secVol.appendChild(d ? (items('vol').length ? ctable('vol', items('vol')) : h('p', { class: 'muted' }, 'No unused volumes.')) : h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
     var secCon = h('div'); secCon.appendChild(d ? (items('con').length ? ctable('con', items('con')) : h('p', { class: 'muted' }, 'No leftover containers. A running container is never listed.')) : h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
     var q = S.qr && S.qr.rows ? S.qr.rows : null;
@@ -6009,10 +6018,11 @@ exit(64);
       w.appendChild(csec('hist', 'Cleanup history', hist.length + ' recent', false, h('div', { class: 'panel' }, t)));
     }
     /* action bar: the same place for the same actions */
-    var s = selected(), eligibleN = 0; ['app', 'img'].forEach(function (c) { items(c).forEach(function (it) { if (it.status === 'eligible') eligibleN++; }); });
+    var s = selected(), eligibleN = 0, pickN = 0; ['app', 'img', 'vol', 'con'].forEach(function (c) { items(c).forEach(function (it) { if (it.status === 'eligible' && c !== 'vol' && c !== 'con') eligibleN++; if (pickable(it)) pickN++; }); });
     var why = busy ? 'Wait until the current job has finished' : !s.count ? 'Select items to review first' : '';
     w.appendChild(h('div', { class: 'cbar' }, h('div', { class: 'grow' }, h('b', null, s.count + ' selected'), h('span', { class: 'muted' }, s.count ? ' · estimated ' + bytes(s.size) : (scanned ? ' · nothing selected' : ' · scan first'))),
       h('button', { class: 'btn', disabled: busy || !eligibleN, title: !eligibleN ? 'There is no eligible item (items marked "Review first" are never picked for you)' : 'Selects only items marked Eligible', onclick: function () { selectEligible(); } }, 'Select all eligible'),
+      h('button', { class: 'btn', disabled: busy || !pickN, title: !pickN ? 'Nothing can be selected' : 'Selects every item in every section, including "Review first" items and volumes', onclick: function () { selectAll(); } }, 'Select all'),
       h('button', { class: 'btn', disabled: !s.count || busy, title: why, onclick: function () { S.cs = { app: {}, img: {}, vol: {}, con: {} }; render(); } }, 'Clear selection'),
       h('button', { class: 'btn', disabled: !s.count || busy, title: why, onclick: function () { runCleanup(true); } }, 'Preview (dry run)'),
       h('button', { class: 'btn danger', disabled: !s.count || busy, title: why, onclick: function () { runCleanup(false); } }, 'Clean Selected Items')));
@@ -6020,6 +6030,23 @@ exit(64);
   }
   /* only items the server marked Eligible; "Review first", protected and in-use items are never picked */
   function selectEligible() { S.cs = { app: {}, img: {}, vol: {}, con: {} }; ['app', 'img'].forEach(function (c) { items(c).forEach(function (it) { if (it.status === 'eligible') S.cs[c][it.key] = true; }); }); render(); }
+  /* everything the scan offers, in every section: "Review first" items, named images, leftover containers and volumes included */
+  function selectAll() { S.cs = { app: {}, img: {}, vol: {}, con: {} }; ['app', 'img', 'vol', 'con'].forEach(function (c) { items(c).forEach(function (it) { if (pickable(it)) S.cs[c][it.key] = true; }); }); render(); }
+  /*
+   * Smart cleanup: scans first when needed, picks the items, then opens the usual confirmation with the list of operations.
+   * safe   = Select all eligible, and folders always go to quarantine (also with Safe mode off): nothing it does is final.
+   * unsafe = Select all; folders are deleted for good when Safe mode is off. The dialog says so and needs the "cannot be undone" tick.
+   */
+  function smartCleanup(mode) {
+    if (S.cscanning || S.cbusy || S.ov.run.running) return;
+    var go = function () {
+      if (mode === 'safe') selectEligible(); else selectAll();
+      var n = selected().count;
+      if (!n) { toast(mode === 'safe' ? 'Nothing is marked Eligible, so a safe cleanup has nothing to do. Review the sections for items that need a closer look.' : 'The scan found nothing to clean up.'); return; }
+      runCleanup(false, { smart: mode });
+    };
+    if (S.cscan) go(); else scanAll().then(function () { if (S.cscan) go(); });
+  }
   function peekFolder(o) {
     api('appdata_peek', { id: o.id }).then(function (j) {
       var m = modal('Inside ' + o.name);
@@ -6033,9 +6060,12 @@ exit(64);
     });
   }
   /* Step 3: preview (dry run) or clean. One summary lists every operation, whether it can be undone, and the warnings. */
-  function runCleanup(dry) {
-    var s = selected(), safe = S.ad ? S.ad.safe_mode : true, del = s.app.length && !safe;
-    var m = modal(dry ? 'Preview (dry run): nothing will be changed' : 'Clean ' + s.count + ' selected item(s)?');
+  function runCleanup(dry, opt) {
+    opt = opt || {};
+    var s = selected(), safe = (S.ad ? S.ad.safe_mode : true) || opt.smart === 'safe', del = s.app.length && !safe;      // a safe smart cleanup never deletes a folder
+    var m = modal(dry ? 'Preview (dry run): nothing will be changed' : (opt.smart ? 'Smart cleanup (' + opt.smart + '): clean ' : 'Clean ') + s.count + ' selected item' + (s.count === 1 ? '' : 's') + '?');
+    if (opt.smart === 'safe') m.body.appendChild(h('div', { class: 'banner ok' }, h('b', null, 'Safe: '), 'only items the scan marked Eligible. Folders are moved to quarantine, where they can be restored; only nameless (dangling) images are removed. Nothing here is final.'));
+    if (opt.smart === 'unsafe') m.body.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'Unsafe: '), 'everything the scan found is included: items marked "Review first", images with a name, leftover containers and volumes with their data' + (S.ad && !S.ad.safe_mode ? ', and folders are deleted for good because Safe mode is off' : ', while folders go to quarantine because Safe mode is on') + '. Read the list before you continue.'));
     var ul = h('ul', { class: 'cops' });
     if (s.app.length) ul.appendChild(h('li', null, h('b', null, s.app.length + ' appdata folder(s): '), safe ? 'moved to the hidden quarantine folder. ' : 'deleted for good. ', h('span', { class: 'badge ' + (safe ? 'ok' : 'bad') }, safe ? 'Can be restored' : 'Cannot be undone')));
     if (s.img.length) ul.appendChild(h('li', null, h('b', null, s.img.length + ' image(s): '), 'removed from Docker (never forced). ', h('span', { class: 'badge ok' }, 'Can be downloaded again')));
@@ -6455,7 +6485,7 @@ exit(64);
   load('overview').then(function () { if (S.ov && S.ov.run.running) startPoll(); return deepLink(); });
 })();
 ]]></INLINE>
-<SHA256>bfad47db0197cb6472babd2ec3c6ecae397569d3d6ca03f3a68b6e1a0c5e8f4e</SHA256>
+<SHA256>7a52c9e91f9f7b107f69434c3265624fc56d95028678018665c8c33e2e3e17c6</SHA256>
 </FILE>
 
 <FILE Run="/bin/bash">

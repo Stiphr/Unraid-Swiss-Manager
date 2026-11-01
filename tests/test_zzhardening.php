@@ -232,6 +232,14 @@ t('ui: toasts and dialogs live outside the page that render() rebuilds; polling 
   $dash = file_get_contents(__DIR__ . '/../src/UnraidSwissManagerDash.page'); has($dash, 'Cond="version_compare'); has($dash, 'dau-w-go');
 });
 
+t('ui: smart cleanup never deletes a folder in safe mode and always goes through the confirmation; select-all controls exist', function () {
+  $js = file_get_contents(__DIR__ . '/../src/assets/app.js');
+  has($js, "|| opt.smart === 'safe'", 'safe smart cleanup forces quarantine whatever the Safe mode setting');
+  has($js, "runCleanup(false, { smart: mode })", 'both smart modes open the normal confirmation dialog');
+  lacks($js, "doCleanup(selected()", 'nothing cleans without the dialog');
+  has($js, "if (mode === 'safe') selectEligible(); else selectAll();"); has($js, 'Select every item in this section'); has($js, "function selectAll()");
+});
+
 t('os: the check uses Unraid\'s own checker, which skips its notification, and keeps its release notes link', function () {
   $s = DAU_PLUGTMP . '/unraidcheck'; file_put_contents($s, '#!/bin/sh'); $GLOBALS['DAU_OSCHECK'] = $s;
   $argv = [];
