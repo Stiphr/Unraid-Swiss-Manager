@@ -303,8 +303,8 @@ t('discord: summary only when there was activity', function () {
 echo "== php 7.4 compatibility (static) ==\n";
 t('no PHP 8-only syntax or functions in src/', function () {
   $bad = ['/\bstr_contains\s*\(/', '/\bstr_starts_with\s*\(/', '/\bstr_ends_with\s*\(/', '/\bmatch\s*\(/', '/\?->/', '/\barray_is_list\s*\(/', '/\benum\s+\w+/', '/\breadonly\b/', '/\bfn\s*\(.*\)\s*:\s*\w+\s*=>/', '/\bmixed\b\s+\$/', '/\bpublic\s+function\s+__construct\s*\(\s*(public|private|protected)/'];
-  $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(__DIR__ . '/../src/include')); $it2 = glob(__DIR__ . '/../src/scripts/*.php');
-  $files = $it2; foreach ($it as $f) if (substr($f, -4) === '.php') $files[] = (string)$f;
+  $files = array_merge(glob(__DIR__ . '/../src/include/*.php') ?: [], glob(__DIR__ . '/../src/scripts/*.php') ?: []);
+  ok(count($files) >= 18, 'every source file is scanned exactly once (found ' . count($files) . '); a recursive directory walk listed each file twice on a bind-mounted checkout');
   foreach ($files as $f) { $code = preg_replace('#//.*|/\*.*?\*/|\'[^\'\\\\]*(?:\\\\.[^\'\\\\]*)*\'|"[^"\\\\]*(?:\\\\.[^"\\\\]*)*"#s', '', file_get_contents($f));
     foreach ($bad as $re) ok(!preg_match($re, $code), basename($f) . " uses PHP8-only construct $re"); }
 });

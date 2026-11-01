@@ -631,7 +631,9 @@
   function statusBadge(st) { var s = STATUS[st] || ['', st]; return h('span', { class: 'badge ' + s[0] }, s[1]); }
   function moreInfo(rows) { var d = h('details', { class: 'more' }, h('summary', null, 'Technical details')); rows.forEach(function (r) { d.appendChild(h('div', { class: 'sm' }, h('span', { class: 'muted' }, r[0] + ': '), h('span', { class: 'mono' }, r[1]))); }); return d; }
   function ctable(cat, list) {
-    var t = h('table', { class: 'resp' }); t.appendChild(h('thead', null, h('tr', null, h('th', null, ''), h('th', null, 'Item'), h('th', null, 'Status'), h('th', null, 'Size'), h('th', null, ''))));
+    var pick = list.filter(pickable), allOn = pick.length > 0 && pick.every(function (it) { return !!sel()[cat][it.key]; });
+    var all = h('input', { type: 'checkbox', checked: allOn, disabled: !pick.length || S.cbusy, 'aria-label': 'Select every item in this section', title: 'Select every item in this section', onchange: function () { pick.forEach(function (it) { sel()[cat][it.key] = all.checked; }); render(); } });
+    var t = h('table', { class: 'resp' }); t.appendChild(h('thead', null, h('tr', null, h('th', null, all), h('th', null, 'Item'), h('th', null, 'Status'), h('th', null, 'Size'), h('th', null, ''))));
     var tb = h('tbody'); t.appendChild(tb);
     list.forEach(function (it) {
       var can = pickable(it) && !S.cbusy;
@@ -676,7 +678,9 @@
       h('div', { class: 'k muted' }, at ? (scanned ? 'Last scan: just now' : 'Last scan: ' + ago(at)) : 'Not scanned yet'),
       h('div', { class: 'big' }, at ? cands + ' item' + (cands === 1 ? '' : 's') + ' to review' : '–'),
       h('div', { class: 'muted sm' }, at ? 'Estimated size: ' + bytes(size) + (scanned ? '' : ' (from the last scan)') + ' · Status: ' + statusText : 'Scanning only looks. Nothing is removed until you select items and confirm. Status: ' + statusText)),
-      h('button', { class: 'btn pri', disabled: busy, title: busy ? 'Wait until the current job has finished' : '', onclick: scanAll }, S.cscanning ? 'Scanning…' : 'Scan for Cleanup Items'))));
+      h('button', { class: 'btn pri', disabled: busy, title: busy ? 'Wait until the current job has finished' : '', onclick: scanAll }, S.cscanning ? 'Scanning…' : 'Scan for Cleanup Items')),
+      h('div', { class: 'smart' }, h('div', { class: 'grow' }, h('b', null, 'Smart cleanup'), h('div', { class: 'muted sm' }, 'Picks the items for you and shows what it would do before anything happens. Safe: only items marked Eligible; folders go to quarantine and only nameless images are removed. Unsafe: everything the scan found, also "Review first" items, named images, leftover containers and volumes; folders are deleted for good when Safe mode is off.')),
+        h('div', { class: 'inl' }, h('button', { class: 'btn', disabled: busy, onclick: function () { smartCleanup('safe'); } }, icon('fa-magic'), 'Smart cleanup (safe)'), h('button', { class: 'btn danger', disabled: busy, onclick: function () { smartCleanup('unsafe'); } }, icon('fa-exclamation-triangle'), 'Smart cleanup (unsafe)')))));
     if (S.cerr && S.cerr.all) w.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'The scan could not run. '), S.cerr.all + ' Wait for the other job to finish, or reload the page, then scan again.'));
     if (S.cerr && S.cerr.docker) w.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'Docker could not be inspected. '), S.cerr.docker + ' Images, volumes and containers (and the check which appdata folders are in use) need the Docker service. Start it under Settings > Docker, then scan again.'));
     else if (S.cerr && S.cerr.app) w.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'Appdata could not be inspected. '), S.cerr.app));
@@ -710,7 +714,7 @@
     } else secApp.appendChild(h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
     var secImg = h('div'); secImg.appendChild(h('div', { class: 'banner' }, 'Dangling images have no name; unused images were downloaded once and no container uses them now. Images that a container uses (' + (d ? d.in_use_images : 'N') + ' right now) are never listed. Volumes and appdata are never touched by image cleanup.'));
     secImg.appendChild(d ? (items('img').length ? ctable('img', items('img')) : h('p', { class: 'muted' }, 'No unused images.')) : h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
-    var secVol = h('div'); secVol.appendChild(h('div', { class: 'banner warn' }, h('b', null, 'Volumes hold data. '), 'Removing one deletes its data and cannot be undone. None is selected for you and Select all eligible never picks them. Docker refuses to remove a volume that is in use.'));
+    var secVol = h('div'); secVol.appendChild(h('div', { class: 'banner warn' }, h('b', null, 'Volumes hold data. '), 'Removing one deletes its data and cannot be undone. Select all eligible and Smart cleanup (safe) never pick them; Select all, the section checkbox and Smart cleanup (unsafe) do. Docker refuses to remove a volume that is in use.'));
     secVol.appendChild(d ? (items('vol').length ? ctable('vol', items('vol')) : h('p', { class: 'muted' }, 'No unused volumes.')) : h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
     var secCon = h('div'); secCon.appendChild(d ? (items('con').length ? ctable('con', items('con')) : h('p', { class: 'muted' }, 'No leftover containers. A running container is never listed.')) : h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
     var q = S.qr && S.qr.rows ? S.qr.rows : null;
@@ -729,10 +733,11 @@
       w.appendChild(csec('hist', 'Cleanup history', hist.length + ' recent', false, h('div', { class: 'panel' }, t)));
     }
     /* action bar: the same place for the same actions */
-    var s = selected(), eligibleN = 0; ['app', 'img'].forEach(function (c) { items(c).forEach(function (it) { if (it.status === 'eligible') eligibleN++; }); });
+    var s = selected(), eligibleN = 0, pickN = 0; ['app', 'img', 'vol', 'con'].forEach(function (c) { items(c).forEach(function (it) { if (it.status === 'eligible' && c !== 'vol' && c !== 'con') eligibleN++; if (pickable(it)) pickN++; }); });
     var why = busy ? 'Wait until the current job has finished' : !s.count ? 'Select items to review first' : '';
     w.appendChild(h('div', { class: 'cbar' }, h('div', { class: 'grow' }, h('b', null, s.count + ' selected'), h('span', { class: 'muted' }, s.count ? ' · estimated ' + bytes(s.size) : (scanned ? ' · nothing selected' : ' · scan first'))),
       h('button', { class: 'btn', disabled: busy || !eligibleN, title: !eligibleN ? 'There is no eligible item (items marked "Review first" are never picked for you)' : 'Selects only items marked Eligible', onclick: function () { selectEligible(); } }, 'Select all eligible'),
+      h('button', { class: 'btn', disabled: busy || !pickN, title: !pickN ? 'Nothing can be selected' : 'Selects every item in every section, including "Review first" items and volumes', onclick: function () { selectAll(); } }, 'Select all'),
       h('button', { class: 'btn', disabled: !s.count || busy, title: why, onclick: function () { S.cs = { app: {}, img: {}, vol: {}, con: {} }; render(); } }, 'Clear selection'),
       h('button', { class: 'btn', disabled: !s.count || busy, title: why, onclick: function () { runCleanup(true); } }, 'Preview (dry run)'),
       h('button', { class: 'btn danger', disabled: !s.count || busy, title: why, onclick: function () { runCleanup(false); } }, 'Clean Selected Items')));
@@ -740,6 +745,23 @@
   }
   /* only items the server marked Eligible; "Review first", protected and in-use items are never picked */
   function selectEligible() { S.cs = { app: {}, img: {}, vol: {}, con: {} }; ['app', 'img'].forEach(function (c) { items(c).forEach(function (it) { if (it.status === 'eligible') S.cs[c][it.key] = true; }); }); render(); }
+  /* everything the scan offers, in every section: "Review first" items, named images, leftover containers and volumes included */
+  function selectAll() { S.cs = { app: {}, img: {}, vol: {}, con: {} }; ['app', 'img', 'vol', 'con'].forEach(function (c) { items(c).forEach(function (it) { if (pickable(it)) S.cs[c][it.key] = true; }); }); render(); }
+  /*
+   * Smart cleanup: scans first when needed, picks the items, then opens the usual confirmation with the list of operations.
+   * safe   = Select all eligible, and folders always go to quarantine (also with Safe mode off): nothing it does is final.
+   * unsafe = Select all; folders are deleted for good when Safe mode is off. The dialog says so and needs the "cannot be undone" tick.
+   */
+  function smartCleanup(mode) {
+    if (S.cscanning || S.cbusy || S.ov.run.running) return;
+    var go = function () {
+      if (mode === 'safe') selectEligible(); else selectAll();
+      var n = selected().count;
+      if (!n) { toast(mode === 'safe' ? 'Nothing is marked Eligible, so a safe cleanup has nothing to do. Review the sections for items that need a closer look.' : 'The scan found nothing to clean up.'); return; }
+      runCleanup(false, { smart: mode });
+    };
+    if (S.cscan) go(); else scanAll().then(function () { if (S.cscan) go(); });
+  }
   function peekFolder(o) {
     api('appdata_peek', { id: o.id }).then(function (j) {
       var m = modal('Inside ' + o.name);
@@ -753,9 +775,12 @@
     });
   }
   /* Step 3: preview (dry run) or clean. One summary lists every operation, whether it can be undone, and the warnings. */
-  function runCleanup(dry) {
-    var s = selected(), safe = S.ad ? S.ad.safe_mode : true, del = s.app.length && !safe;
-    var m = modal(dry ? 'Preview (dry run): nothing will be changed' : 'Clean ' + s.count + ' selected item(s)?');
+  function runCleanup(dry, opt) {
+    opt = opt || {};
+    var s = selected(), safe = (S.ad ? S.ad.safe_mode : true) || opt.smart === 'safe', del = s.app.length && !safe;      // a safe smart cleanup never deletes a folder
+    var m = modal(dry ? 'Preview (dry run): nothing will be changed' : (opt.smart ? 'Smart cleanup (' + opt.smart + '): clean ' : 'Clean ') + s.count + ' selected item' + (s.count === 1 ? '' : 's') + '?');
+    if (opt.smart === 'safe') m.body.appendChild(h('div', { class: 'banner ok' }, h('b', null, 'Safe: '), 'only items the scan marked Eligible. Folders are moved to quarantine, where they can be restored; only nameless (dangling) images are removed. Nothing here is final.'));
+    if (opt.smart === 'unsafe') m.body.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'Unsafe: '), 'everything the scan found is included: items marked "Review first", images with a name, leftover containers and volumes with their data' + (S.ad && !S.ad.safe_mode ? ', and folders are deleted for good because Safe mode is off' : ', while folders go to quarantine because Safe mode is on') + '. Read the list before you continue.'));
     var ul = h('ul', { class: 'cops' });
     if (s.app.length) ul.appendChild(h('li', null, h('b', null, s.app.length + ' appdata folder(s): '), safe ? 'moved to the hidden quarantine folder. ' : 'deleted for good. ', h('span', { class: 'badge ' + (safe ? 'ok' : 'bad') }, safe ? 'Can be restored' : 'Cannot be undone')));
     if (s.img.length) ul.appendChild(h('li', null, h('b', null, s.img.length + ' image(s): '), 'removed from Docker (never forced). ', h('span', { class: 'badge ok' }, 'Can be downloaded again')));
