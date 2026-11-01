@@ -1,3 +1,6 @@
+###2026.11.04
+- New: Smart cleanup on the Cleanup tab. Safe picks only items marked Eligible, quarantines the folders and removes only nameless images; Unsafe picks everything the scan found, orphaned images with a name, leftover containers and volumes included, and deletes folders for good when Safe mode is off. Both scan first when needed and show the full list of operations before anything happens.
+- New: Select all (every section, volumes included) next to Select all eligible, and a checkbox in each section's table header that selects that section.
 ###2026.11.03
 - Fix: the recovery step of a failed container update named the old image as "x/app@sha256:[redacted]" in Activity and Discord, because the digest was taken for a secret. Digests are kept now; long tokens are still redacted.
 - Fix: a container update that verified fine after Unraid's own routine timed out was recorded as updated with an error text. The timeout is now a warning on the entry; it only becomes part of the error when the container really failed.
