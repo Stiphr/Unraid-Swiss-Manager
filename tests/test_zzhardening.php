@@ -237,7 +237,10 @@ t('ui: smart cleanup never deletes a folder in safe mode and always goes through
   has($js, "|| opt.smart === 'safe'", 'safe smart cleanup forces quarantine whatever the Safe mode setting');
   has($js, "runCleanup(false, { smart: mode })", 'both smart modes open the normal confirmation dialog');
   lacks($js, "doCleanup(selected()", 'nothing cleans without the dialog');
-  has($js, "if (mode === 'safe') selectEligible(); else selectAll();"); has($js, 'Select every item in this section'); has($js, "function selectAll()");
+  has($js, "if (mode === 'safe') selectSafe(); else selectAll();"); has($js, 'Select every item in this section'); has($js, "function selectAll()");
+  has($js, "if (it.status === 'eligible') S.cs[c][it.key] = true;", 'Select Safe takes only items marked Safe');
+  has($js, "var full = s.vol.filter(function (o) { return !o.raw.empty; });", 'a volume with data still needs the "cannot be undone" tick');
+  has($js, "if (!S.cscan && !S.cauto && !busy) { S.cauto = true; setTimeout(scanAll, 0); }", 'the tab scans by itself once, never during a job');
 });
 
 t('os: the check uses Unraid\'s own checker, which skips its notification, and keeps its release notes link', function () {
