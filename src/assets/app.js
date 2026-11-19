@@ -577,33 +577,37 @@
   /* ---------- Cleanup ---------- */
   function bytes(b) { b = +b || 0; return b >= 1073741824 ? (b / 1073741824).toFixed(2) + ' GB' : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' kB'; }
   function ageText(sec) { sec = +sec || 0; return sec < 86400 ? 'today' : sec < 86400 * 60 ? Math.round(sec / 86400) + ' days ago' : sec < 86400 * 730 ? Math.round(sec / 86400 / 30) + ' months ago' : Math.round(sec / 86400 / 365) + ' years ago'; }
-  function cleanCount(c) { return c ? ((c.appdata || {}).n || 0) + ((c.images || {}).n || 0) + ((c.volumes || {}).n || 0) + ((c.containers || {}).n || 0) : 0; }
-  var CCAT = [
-    ['app', 'Appdata folders', 'Folders in your appdata share that no container uses any more.'],
-    ['img', 'Docker images', 'Images that no container uses: leftovers from updates and old downloads.'],
-    ['vol', 'Docker volumes', 'Volumes that no container uses. They can hold data, so none is pre-selected.'],
-    ['con', 'Stopped containers', 'Stopped containers that Unraid did not create.'],
-    ['tpl', 'Saved templates', 'Saved templates of containers that were removed.'],
-    ['qua', 'Quarantine', 'Folders you moved aside. Restore them, or delete them for good.']
-  ];
-  var STATUS = { eligible: ['ok', 'Eligible'], review: ['warn', 'Review first'], protected: ['off', 'Protected'], inuse: ['info', 'In use'] };
-  function sel() { return S.cs = S.cs || { app: {}, img: {}, vol: {}, con: {} }; }
+  function cleanTotal(c) { return c ? ((c.appdata || {}).n || 0) + ((c.images || {}).n || 0) + ((c.volumes || {}).n || 0) + ((c.containers || {}).n || 0) + ((c.cache || {}).n || 0) : 0; }
+  function emptySel() { return { app: {}, img: {}, vol: {}, con: {}, bc: {} }; }
+  function repoOf(t) { var p = t.lastIndexOf(':'); return p > 0 && t.slice(p).indexOf('/') < 0 ? t.slice(0, p) : t; }
+  /* the tab badge counts what Smart cleanup (safe) would take; a summary from before 2026.11.05 has no safe count yet */
+  function cleanCount(c) { return c ? (c.safe ? c.safe.n || 0 : cleanTotal(c)) : 0; }
+  var STATUS = { eligible: ['ok', 'Safe'], review: ['warn', 'Check first'], protected: ['off', 'Protected'], inuse: ['info', 'In use'] };
+  var SORDER = { eligible: 0, review: 1, protected: 2 };
+  function sel() { return S.cs = S.cs || emptySel(); }
   /* every candidate in one shape: key, name, type, reason, status, size, details */
   function items(cat) {
     var out = [];
     if (cat === 'app' && S.ad && S.ad.orphans) {
-      S.ad.orphans.forEach(function (o) { out.push({ cat: cat, key: o.id, name: o.name, type: 'Appdata folder', reason: o.reason, status: o.status, size: o.size, details: [['Location', o.path], ['Last changed', ageText(o.age)], ['Saved template', o.tpl.length ? o.tpl.join(', ') : 'none']], raw: o }); });
+      S.ad.orphans.forEach(function (o) { out.push({ cat: cat, key: o.id, name: o.name, type: o.copy_of ? 'Copy of ' + o.copy_of : o.empty ? 'Empty folder' : 'Appdata folder', group: o.copy_of ? 'Copies of ' + o.copy_of : null, reason: o.reason, status: o.status, size: o.size, details: [['Location', o.path], ['Last changed', ageText(o.age)], ['Saved template', o.tpl.length ? o.tpl.join(', ') : 'none']], raw: o }); });
       (S.ad.protected || []).forEach(function (o) { out.push({ cat: cat, key: o.id, name: o.name, type: 'Appdata folder', reason: o.reason, status: 'protected', size: null, details: [['Location', o.path]], raw: o }); });
     }
-    if (cat === 'img' && S.clean) S.clean.images.forEach(function (i) { out.push({ cat: cat, key: i.id, name: i.tags.length ? i.tags.join(', ') : '(no name)', type: i.dangling ? 'Dangling image' : 'Unused image', reason: i.reason, status: i.status, size: i.size, details: [['Image ID', i.id], ['Downloaded', i.created]], raw: i }); });
-    if (cat === 'vol' && S.clean) (S.clean.volumes || []).forEach(function (v) { out.push({ cat: cat, key: v.name, name: v.anonymous ? v.name.slice(0, 12) + '…' : v.name, type: v.anonymous ? 'Unnamed volume' : 'Named volume', reason: v.reason, status: v.status, size: v.size, details: [['Volume name', v.name]], raw: v }); });
+    if (cat === 'img' && S.clean) S.clean.images.forEach(function (i) {
+      out.push({ cat: cat, key: i.id, name: i.tags.length ? i.tags.join(', ') : '(no name)', type: i.dangling ? 'Nameless image' : (i.older ? 'Older copy' : 'Unused image') + (i.local ? ', built here' : ''), group: i.dangling ? 'Nameless images' : 'Copies of ' + repoOf(i.tags[0]),
+        reason: i.reason, status: i.status, size: i.size, raw: i,
+        details: [['Image ID', i.id], ['Created', i.created], ['Origin', i.dangling ? '-' : i.local ? 'Built on this server: it cannot be downloaded again' : 'Downloaded from a registry'], ['Other versions in use by', (i.repo_used_by || []).length ? i.repo_used_by.join(', ') : 'no container']] });
+    });
+    if (cat === 'vol' && S.clean) (S.clean.volumes || []).forEach(function (v) { out.push({ cat: cat, key: v.name, name: v.anonymous ? v.name.slice(0, 12) + '…' : v.name, type: (v.anonymous ? 'Unnamed volume' : 'Named volume') + (v.empty ? ', empty' : ''), group: v.empty && v.anonymous ? 'Empty unnamed volumes' : null, reason: v.reason, status: v.status, size: v.size, details: [['Volume name', v.name]], raw: v }); });
+    if (cat === 'bc' && S.clean && S.clean.cache) out.push({ cat: cat, key: 'cache', name: 'Docker build cache', type: 'Cache of earlier image builds', reason: S.clean.cache.reason, status: S.clean.cache.status, size: S.clean.cache.size, details: [['Removed with', 'docker builder prune (unused cache only)']], raw: S.clean.cache });
     if (cat === 'con' && S.clean) S.clean.containers.forEach(function (x) { out.push({ cat: cat, key: x.name, name: x.name, type: 'Stopped container', reason: x.reason, status: x.status, size: x.size, details: [['Image', x.image], ['State', x.state], ['Stopped', x.finished ? x.finished.slice(0, 10) : '-']], raw: x }); });
-    return out;
+    /* Safe items first, then the biggest */
+    return out.sort(function (a, b) { return (SORDER[a.status] || 0) - (SORDER[b.status] || 0) || (b.size || 0) - (a.size || 0); });
   }
+  var CATS = ['app', 'img', 'vol', 'con', 'bc'];
   function pickable(it) { return it.status === 'eligible' || it.status === 'review'; }
   function selected() {
-    var r = { app: [], img: [], vol: [], con: [], count: 0, size: 0 };
-    ['app', 'img', 'vol', 'con'].forEach(function (c) { items(c).forEach(function (it) { if (pickable(it) && sel()[c][it.key]) { r[c].push(it); r.count++; r.size += it.size || 0; } }); });
+    var r = { app: [], img: [], vol: [], con: [], bc: [], count: 0, size: 0 };
+    CATS.forEach(function (c) { items(c).forEach(function (it) { if (pickable(it) && sel()[c][it.key]) { r[c].push(it); r.count++; r.size += it.size || 0; } }); });
     return r;
   }
   function scanAll() {
@@ -614,7 +618,7 @@
       if (j.error) { S.cerr = { all: j.error }; toast(j.error, true); render(); return; }
       S.cerr = { app: j.appdata && j.appdata.ok === false ? j.appdata.error : '', docker: j.docker && j.docker.ok === false ? j.docker.error : '' };
       S.ad = j.appdata && j.appdata.ok !== false ? j.appdata : null; S.clean = j.docker && j.docker.ok !== false ? j.docker : null; S.cscan = { at: Date.now() / 1000 };
-      S.cs = { app: {}, img: {}, vol: {}, con: {} };
+      S.cs = emptySel();
       if (j.summary) S.ov.cards.cleanup = Object.assign({}, j.summary, { quarantine: S.ov.cards.cleanup.quarantine });
       S.qr = null; S.tp = null; render();
     });
@@ -633,9 +637,9 @@
   function ctable(cat, list) {
     var pick = list.filter(pickable), allOn = pick.length > 0 && pick.every(function (it) { return !!sel()[cat][it.key]; });
     var all = h('input', { type: 'checkbox', checked: allOn, disabled: !pick.length || S.cbusy, 'aria-label': 'Select every item in this section', title: 'Select every item in this section', onchange: function () { pick.forEach(function (it) { sel()[cat][it.key] = all.checked; }); render(); } });
-    var t = h('table', { class: 'resp' }); t.appendChild(h('thead', null, h('tr', null, h('th', null, all), h('th', null, 'Item'), h('th', null, 'Status'), h('th', null, 'Size'), h('th', null, ''))));
+    var t = h('table', { class: 'resp ctab' }); t.appendChild(h('thead', null, h('tr', null, h('th', null, all), h('th', null, 'Item'), h('th', null, 'Status'), h('th', null, 'Size'), h('th', null, ''))));
     var tb = h('tbody'); t.appendChild(tb);
-    list.forEach(function (it) {
+    function row(it, sub) {
       var can = pickable(it) && !S.cbusy;
       var cb = h('input', { type: 'checkbox', checked: !!sel()[cat][it.key], disabled: !can, 'aria-label': 'Select ' + it.name, title: can ? '' : it.status === 'protected' ? 'Protected items cannot be cleaned' : '', onchange: function (e) { sel()[cat][it.key] = e.target.checked; render(); } });
       var acts = h('td', { class: 'acts' });
@@ -643,162 +647,206 @@
         acts.appendChild(h('button', { class: 'btn sm', onclick: function () { peekFolder(it.raw); } }, 'Contents'));
         acts.appendChild(h('button', { class: 'btn sm', title: 'Never list this folder again. You can undo this from the Ignored list.', onclick: function () { act('appdata_ignore', { name: it.name, add: '1' }, it.name + ' is excluded from future scans').then(scanAll); } }, 'Exclude'));
       }
-      tb.appendChild(h('tr', { class: 'row' }, h('td', null, cb), h('td', { class: 'name', 'data-l': 'Item' }, h('span', { class: 'nm' }, it.name), h('div', { class: 'muted sm' }, it.type + ' · ' + it.reason), moreInfo(it.details)),
+      if (cat === 'vol' && !it.raw.empty) acts.appendChild(h('button', { class: 'btn sm', onclick: function () { peekVolume(it.raw.name); } }, 'Contents'));
+      if (cat === 'con') acts.appendChild(h('button', { class: 'btn sm', onclick: function () { showLogs(it.name); } }, 'Logs'));
+      tb.appendChild(h('tr', { class: 'row' + (sub ? ' sub' : '') }, h('td', null, cb), h('td', { class: 'name', 'data-l': 'Item' }, h('span', { class: 'nm' }, it.name), h('div', { class: 'muted sm' }, it.type + ' · ' + it.reason), moreInfo(it.details)),
         h('td', { 'data-l': 'Status' }, statusBadge(it.status)), h('td', { 'data-l': 'Size' }, it.size == null ? '-' : bytes(it.size)), acts));
+    }
+    /* three or more of a kind (copies of one image, empty volumes, copies of one folder) fold into one row */
+    function group(g, members) {
+      var gp = members.filter(pickable), on = gp.length > 0 && gp.every(function (it) { return !!sel()[cat][it.key]; }), some = gp.some(function (it) { return !!sel()[cat][it.key]; });
+      var safeN = members.filter(function (it) { return it.status === 'eligible'; }).length, key = cat + '|' + g, open = !!(S.cgrp && S.cgrp[key]);
+      var cb = h('input', { type: 'checkbox', checked: on, disabled: !gp.length || S.cbusy, 'aria-label': 'Select ' + g, onchange: function () { gp.forEach(function (it) { sel()[cat][it.key] = cb.checked; }); render(); } });
+      cb.indeterminate = !on && some;
+      var tog = h('button', { class: 'btn sm', 'aria-expanded': open ? 'true' : 'false', onclick: function () { S.cgrp = S.cgrp || {}; S.cgrp[key] = !open; render(); } }, open ? 'Hide' : 'Show ' + members.length);
+      tb.appendChild(h('tr', { class: 'row grp' }, h('td', null, cb), h('td', { class: 'name', 'data-l': 'Item' }, h('span', { class: 'nm' }, g), h('div', { class: 'muted sm' }, members.length + ' items · ' + (safeN === members.length ? 'all marked Safe' : safeN ? safeN + ' Safe, ' + (members.length - safeN) + ' Check first' : 'all Check first'))),
+        h('td', { 'data-l': 'Status' }, safeN === members.length ? statusBadge('eligible') : safeN ? h('span', { class: 'badge info' }, 'Mixed') : statusBadge('review')), h('td', { 'data-l': 'Size' }, bytes(members.reduce(function (a2, x) { return a2 + (x.size || 0); }, 0))), h('td', { class: 'acts' }, tog)));
+      if (open) members.forEach(function (it) { row(it, true); });
+    }
+    var groups = {}, shown = {};
+    list.forEach(function (it) { if (it.group) (groups[it.group] = groups[it.group] || []).push(it); });
+    list.forEach(function (it) {
+      if (it.group && groups[it.group].length >= 3) { if (!shown[it.group]) { shown[it.group] = true; group(it.group, groups[it.group]); } return; }
+      row(it, false);
     });
     return t;
   }
-  function catStat(cat) {   // count and size of what can be reviewed (not protected)
-    if (cat === 'tpl') return S.tp && S.tp.templates ? { n: S.tp.templates.length, size: null } : null;
-    if (cat === 'qua') return S.qr && S.qr.rows ? { n: S.qr.rows.length, size: S.qr.rows.reduce(function (a, e) { return a + (+e.size || 0); }, 0) } : null;
-    var l = items(cat).filter(pickable), has = cat === 'app' ? !!S.ad : !!S.clean;
-    return has ? { n: l.length, size: l.reduce(function (a, x) { return a + (x.size || 0); }, 0) } : null;
+  function peekList(title, j) {
+    var m = modal(title);
+    if (j.error || !j.ok) m.body.appendChild(h('p', null, j.error || 'Could not look inside.'));
+    else {
+      m.body.appendChild(h('p', { class: 'muted' }, j.count + ' item(s) directly inside. The biggest:'));
+      j.items.forEach(function (i) { m.body.appendChild(h('div', null, i.dir ? '📁 ' : i.link ? '↪ ' : '', h('b', null, i.name), ' ', h('span', { class: 'muted' }, bytes(i.size)))); });
+      if (j.more) m.body.appendChild(h('div', { class: 'muted' }, '… and ' + j.more + ' more'));
+    }
+    m.foot.appendChild(h('button', { class: 'btn', onclick: m.close }, 'Close'));
   }
-  function stage() { return S.cscanning ? 1 : !S.cscan ? 1 : selected().count ? 3 : 2; }
+  function peekVolume(name) { api('volume_peek', { name: name }).then(function (j) { peekList('Inside volume ' + (name.length > 20 ? name.slice(0, 12) + '…' : name), j); }); }
+  function showLogs(name) {
+    api('container_logs', { name: name }).then(function (j) {
+      var m = modal('Last lines of ' + name);
+      if (j.error || !j.ok) m.body.appendChild(h('p', null, j.error || 'Could not read the log.'));
+      else m.body.appendChild(j.log ? h('pre', { class: 'log' }, j.log) : h('p', { class: 'muted' }, 'It wrote nothing.'));
+      m.foot.appendChild(h('button', { class: 'btn', onclick: m.close }, 'Close'));
+    });
+  }
+  function catStat(cat) {   // count, size and Safe count of what can be cleaned (not protected)
+    if (cat === 'tpl') return S.tp && S.tp.templates ? { n: S.tp.templates.length, size: null, safe: 0 } : null;
+    if (cat === 'qua') return S.qr && S.qr.rows ? { n: S.qr.rows.length, size: S.qr.rows.reduce(function (a, e) { return a + (+e.size || 0); }, 0), safe: 0 } : null;
+    var l = items(cat).filter(pickable), has = cat === 'app' ? !!S.ad : !!S.clean;
+    return has ? { n: l.length, size: l.reduce(function (a, x) { return a + (x.size || 0); }, 0), safe: l.filter(function (x) { return x.status === 'eligible'; }).length } : null;
+  }
+  /* totals of the fresh scan, or of the summary the last scan stored */
+  function cleanTotals() {
+    var t = { n: 0, size: 0, safe: 0, safeSize: 0, fresh: !!S.cscan };
+    if (t.fresh) {
+      CATS.forEach(function (c) { items(c).forEach(function (it) { if (!pickable(it)) return; t.n++; t.size += it.size || 0; if (it.status === 'eligible') { t.safe++; t.safeSize += it.size || 0; } }); });
+      /* what a full cleanup really frees: images as Docker counts them (shared layers once), everything else as measured */
+      var rc = S.clean && S.clean.reclaim; t.free = rc && rc.images != null ? t.size - items('img').reduce(function (a, x) { return a + (x.size || 0); }, 0) + rc.images : null;
+      return t;
+    }
+    var sm = S.ov.cards.cleanup || {};
+    t.n = cleanTotal(sm); ['appdata', 'images', 'volumes', 'containers', 'cache'].forEach(function (k) { t.size += (sm[k] || {}).size || 0; });
+    t.safe = sm.safe ? sm.safe.n : null; t.safeSize = sm.safe ? sm.safe.size : 0; t.free = sm.freeable != null ? sm.freeable : null;
+    return t;
+  }
   function vCleanup() {
     var w = h('div'), busy = S.ov.run.running || S.cscanning || S.cbusy, sm = S.ov.cards.cleanup || {};
+    /* scanning only looks, so the tab scans by itself once per page load */
+    if (!S.cscan && !S.cauto && !busy) { S.cauto = true; setTimeout(scanAll, 0); }
     /* result of the last cleanup, until dismissed */
     if (S.cresult) {
       var r = S.cresult;
-      var p = h('div', { class: 'panel' }, h('h3', null, r.fail ? 'Cleanup finished with problems' : 'Cleanup finished'),
-        h('div', { class: 'cards' }, card('Cleaned', r.done.length, 'items'), card('Skipped', r.skipped.length, 'no longer valid'), card('Failed', r.failed.length, r.failed.length ? 'see below' : 'none', r.failed.length ? 'bad' : ''), card('Size of cleaned items', bytes(r.size), 'measured before removal')));
-      p.appendChild(h('p', { class: 'muted sm' }, 'This is the size of what was cleaned, read before it was removed, not space read back from the disk. ' + (r.moved ? 'Folders moved to quarantine free no space until you delete them there. ' : '') + 'Images that share layers free less than their sizes added up.'));
+      var p = h('div', { class: 'banner ' + (r.fail ? 'bad' : 'ok') }, h('b', null, r.fail ? 'Cleanup finished with problems. ' : 'Cleanup finished. '),
+        r.done.length + ' cleaned (' + bytes(r.size) + '), ' + r.skipped.length + ' skipped, ' + r.failed.length + ' failed. ' + (r.moved ? 'Folders in quarantine still use their space until you delete them there.' : ''));
       r.skipped.concat(r.failed).forEach(function (x) { p.appendChild(h('div', { class: 'sm' }, h('span', { class: 'badge ' + (r.failed.indexOf(x) >= 0 ? 'bad' : 'warn') }, r.failed.indexOf(x) >= 0 ? 'Failed' : 'Skipped'), ' ', h('b', null, x.what), ' ', h('span', { class: 'muted' }, x.why))); });
-      p.appendChild(h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: function () { S.cresult = null; render(); } }, 'Dismiss')));
+      p.appendChild(h('div', null, h('button', { class: 'btn sm', onclick: function () { S.cresult = null; render(); } }, 'Dismiss')));
       w.appendChild(p);
     }
-    /* overview: what the last scan found, one primary action */
-    var scanned = !!S.cscan, at = scanned ? S.cscan.at : sm.at, cands = 0, size = 0, sizeKnown = scanned;
-    ['app', 'img', 'vol', 'con'].forEach(function (c) { var st = catStat(c); if (st) { cands += st.n; size += st.size || 0; } });
-    if (!scanned) { cands = cleanCount(sm); size = ((sm.appdata || {}).size || 0) + ((sm.images || {}).size || 0) + ((sm.volumes || {}).size || 0) + ((sm.containers || {}).size || 0); }
-    var statusText = S.cscanning ? 'Scanning…' : S.cbusy ? 'Cleaning…' : S.ov.run.running ? 'Another job is running' : 'Idle';
-    var st3 = stage(), steps = h('div', { class: 'steps', 'aria-label': 'Cleanup steps' });
-    [['1', 'Scan'], ['2', 'Review'], ['3', 'Clean']].forEach(function (x, i) { steps.appendChild(h('span', { class: 'step' + (st3 === i + 1 ? ' on' : st3 > i + 1 ? ' done' : ''), 'aria-current': st3 === i + 1 ? 'step' : null }, x[0] + '. ' + x[1])); });
-    w.appendChild(h('div', { class: 'panel' }, steps, h('div', { class: 'inl' }, h('div', { class: 'grow' },
-      h('div', { class: 'k muted' }, at ? (scanned ? 'Last scan: just now' : 'Last scan: ' + ago(at)) : 'Not scanned yet'),
-      h('div', { class: 'big' }, at ? cands + ' item' + (cands === 1 ? '' : 's') + ' to review' : '–'),
-      h('div', { class: 'muted sm' }, at ? 'Estimated size: ' + bytes(size) + (scanned ? '' : ' (from the last scan)') + ' · Status: ' + statusText : 'Scanning only looks. Nothing is removed until you select items and confirm. Status: ' + statusText)),
-      h('button', { class: 'btn pri', disabled: busy, title: busy ? 'Wait until the current job has finished' : '', onclick: scanAll }, S.cscanning ? 'Scanning…' : 'Scan for Cleanup Items')),
-      h('div', { class: 'smart' }, h('div', { class: 'grow' }, h('b', null, 'Smart cleanup'), h('div', { class: 'muted sm' }, 'Picks the items for you and shows what it would do before anything happens. Safe: only items marked Eligible; folders go to quarantine and only nameless images are removed. Unsafe: everything the scan found, also "Review first" items, named images, leftover containers and volumes; folders are deleted for good when Safe mode is off.')),
-        h('div', { class: 'inl' }, h('button', { class: 'btn', disabled: busy, onclick: function () { smartCleanup('safe'); } }, icon('fa-magic'), 'Smart cleanup (safe)'), h('button', { class: 'btn danger', disabled: busy, onclick: function () { smartCleanup('unsafe'); } }, icon('fa-exclamation-triangle'), 'Smart cleanup (unsafe)')))));
+    /* one panel: what the scan found, and the two smart buttons */
+    var t = cleanTotals(), at = t.fresh ? S.cscan.at : sm.at;
+    var line = S.cscanning ? 'Scanning…' : S.cbusy ? 'Cleaning…' : at ? 'Last scan: ' + (t.fresh ? 'just now' : ago(at)) : 'Not scanned yet';
+    var safeTxt = t.safe == null ? 'scan to see what is safe' : t.safe + ' marked Safe';
+    var noSafe = t.fresh && !t.safe;
+    w.appendChild(h('div', { class: 'panel chero' },
+      h('div', { class: 'grow' },
+        h('div', { class: 'k muted' }, line),
+        h('div', { class: 'big' }, at ? bytes(t.free != null ? t.free : t.size) : '–', at ? h('span', { class: 'big-u' }, t.free != null ? ' can be freed' : ' listed') : null),
+        h('div', { class: 'muted' }, at ? t.n + ' item' + (t.n === 1 ? '' : 's') + ' nothing uses · ' + safeTxt + (t.free != null && t.size > t.free * 1.2 ? ' · the list adds up to ' + bytes(t.size) + ', because images share layers' : '') : 'Scanning only looks. Nothing is removed until you confirm.')),
+      h('div', { class: 'chero-acts' },
+        h('button', { class: 'btn pri', disabled: busy || noSafe, title: noSafe ? 'Nothing is marked Safe. Check the items in the sections below.' : 'Picks every item marked Safe and shows the list before anything happens', onclick: function () { smartCleanup('safe'); } }, icon('fa-magic'), 'Smart cleanup (safe)'),
+        h('button', { class: 'btn danger', disabled: busy || (t.fresh && !t.n), title: 'Picks everything the scan found, also items marked Check first, and shows the list before anything happens', onclick: function () { smartCleanup('unsafe'); } }, icon('fa-exclamation-triangle'), 'Smart cleanup (unsafe)'),
+        h('button', { class: 'btn', disabled: busy, title: busy ? 'Wait until the current job has finished' : 'Look again', onclick: scanAll }, icon('fa-refresh'), S.cscanning ? 'Scanning…' : 'Rescan')),
+      h('p', { class: 'muted sm chero-note' }, h('b', null, 'Safe'), ' never deletes your data: folders go to quarantine, where they can be restored, and it removes only nameless images, older copies of an image and empty volumes. ', h('b', null, 'Unsafe'), ' also takes items marked Check first' + (S.ad && !S.ad.safe_mode ? ', and deletes folders for good because Safe mode is off.' : '.'))));
     if (S.cerr && S.cerr.all) w.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'The scan could not run. '), S.cerr.all + ' Wait for the other job to finish, or reload the page, then scan again.'));
     if (S.cerr && S.cerr.docker) w.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'Docker could not be inspected. '), S.cerr.docker + ' Images, volumes and containers (and the check which appdata folders are in use) need the Docker service. Start it under Settings > Docker, then scan again.'));
     else if (S.cerr && S.cerr.app) w.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'Appdata could not be inspected. '), S.cerr.app));
-    /* categories */
-    var cards = h('div', { class: 'ccats' });
-    CCAT.forEach(function (c) {
-      var st = catStat(c[0]);
-      cards.appendChild(h('div', { class: 'ccat' }, h('h4', null, c[1]), h('div', { class: 'cn' }, st ? st.n : '–'), h('div', { class: 'muted sm' }, st ? (st.size == null ? '' : bytes(st.size)) : 'not scanned'), h('div', { class: 'muted sm cdesc' }, c[2]),
-        h('button', { class: 'btn sm', onclick: function () { S.copen = S.copen || {}; S.copen[c[0]] = true; render(); var e = document.getElementById('csec-' + c[0]); if (e && e.scrollIntoView) e.scrollIntoView({ block: 'start' }); } }, 'Review')));
-    });
-    w.appendChild(cards);
-    if (scanned && !cands && !S.cerr.docker && !S.cerr.app) w.appendChild(h('div', { class: 'banner ok' }, h('b', null, 'Nothing to clean up. '), 'No unused appdata folders, images, volumes or leftover containers were found.'));
-    /* review sections */
-    var a = S.ad, d = S.clean;
-    var secApp = h('div');
-    secApp.appendChild(h('div', { class: 'banner' }, 'These folders are not used by any container, running or stopped. Safe mode is ' + (a ? (a.safe_mode ? 'on: selected folders are moved to a hidden quarantine folder and can be restored.' : 'off: selected folders are deleted for good.') : 'checked when you scan.')));
+    if (t.fresh && !t.n && !S.cerr.docker && !S.cerr.app) w.appendChild(h('div', { class: 'banner ok' }, h('b', null, 'Nothing to clean up. '), 'No unused appdata folders, images, volumes or leftover containers were found.'));
+    /* one folding section per kind; small ones with items start open */
+    var a = S.ad, d = S.clean, scanned = t.fresh;
+    function body(ok, intro, cat, none) {
+      var b = h('div'); if (intro) b.appendChild(intro);
+      if (!ok) { b.appendChild(S.cscanning ? loading('Scanning') : h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Not scanned yet.')); return b; }
+      var l = items(cat); b.appendChild(l.length ? ctable(cat, l) : h('p', { class: 'muted' }, none)); return b;
+    }
+    var secApp = body(!!a, h('p', { class: 'muted sm' }, 'Folders in your appdata share that no container uses, running or stopped. ' + (a ? (a.safe_mode ? 'Safe mode is on: cleaned folders go to quarantine and can be restored.' : 'Safe mode is off: cleaned folders are deleted for good.') : '')), 'app', 'No unused appdata folders.');
     if (a) {
-      var la = items('app');
-      if (!la.length) secApp.appendChild(h('p', { class: 'muted' }, 'No unused appdata folders.')); else secApp.appendChild(ctable('app', la));
       if (a.in_use) {
-        var iu = h('details', { class: 'more' }, h('summary', null, 'Currently in use (' + a.in_use + '): not listed above, cannot be cleaned'));
+        var iu = h('details', { class: 'more' }, h('summary', null, 'In use (' + a.in_use + '): never listed above'));
         (a.in_use_rows || []).forEach(function (x) { iu.appendChild(h('div', { class: 'sm' }, h('b', null, x.name), h('span', { class: 'muted' }, ' used by ' + x.by.join(', ')))); });
         secApp.appendChild(iu);
       }
-      if (a.broad && a.broad.length) secApp.appendChild(h('p', { class: 'muted sm' }, 'These containers map a whole parent folder (for example /mnt/user): ' + a.broad.join(', ') + '. That does not count as using one appdata folder, so it does not block cleanup.'));
+      if (a.broad && a.broad.length) secApp.appendChild(h('p', { class: 'muted sm' }, 'These containers map a whole parent folder (for example /mnt/user): ' + a.broad.join(', ') + '. That does not count as using one appdata folder.'));
       if (a.ignored && a.ignored.length) {
         var ig = h('div', { class: 'inl' }, h('span', { class: 'muted sm' }, 'Excluded from scans:'));
         a.ignored.forEach(function (n) { ig.appendChild(h('button', { class: 'btn sm', title: 'Include this folder in scans again', onclick: function () { act('appdata_ignore', { name: n, add: '0' }).then(scanAll); } }, n + ' ✕')); });
         secApp.appendChild(ig);
       }
-    } else secApp.appendChild(h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
-    var secImg = h('div'); secImg.appendChild(h('div', { class: 'banner' }, 'Dangling images have no name; unused images were downloaded once and no container uses them now. Images that a container uses (' + (d ? d.in_use_images : 'N') + ' right now) are never listed. Volumes and appdata are never touched by image cleanup.'));
-    secImg.appendChild(d ? (items('img').length ? ctable('img', items('img')) : h('p', { class: 'muted' }, 'No unused images.')) : h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
-    var secVol = h('div'); secVol.appendChild(h('div', { class: 'banner warn' }, h('b', null, 'Volumes hold data. '), 'Removing one deletes its data and cannot be undone. Select all eligible and Smart cleanup (safe) never pick them; Select all, the section checkbox and Smart cleanup (unsafe) do. Docker refuses to remove a volume that is in use.'));
-    secVol.appendChild(d ? (items('vol').length ? ctable('vol', items('vol')) : h('p', { class: 'muted' }, 'No unused volumes.')) : h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
-    var secCon = h('div'); secCon.appendChild(d ? (items('con').length ? ctable('con', items('con')) : h('p', { class: 'muted' }, 'No leftover containers. A running container is never listed.')) : h('p', { class: 'muted' }, scanned ? 'Not available (see the message above).' : 'Press "Scan for Cleanup Items" to look.'));
+    }
+    var secImg = body(!!d, h('p', { class: 'muted sm' }, 'Images no container uses' + (d ? ' (' + d.in_use_images + ' in use are never listed)' : '') + '. Safe: nameless leftovers of updates, and older copies when a newer copy of the same image is kept.'), 'img', 'No unused images.');
+    var secVol = body(!!d, h('div', { class: 'banner warn' }, h('b', null, 'Volumes hold data. '), 'Removing one deletes its data for good. Only empty volumes are marked Safe. Docker refuses to remove a volume that is in use.'), 'vol', 'No unused volumes.');
+    var secCon = body(!!d, h('p', { class: 'muted sm' }, 'Stopped containers that Unraid did not create. A running container is never listed; their appdata stays.'), 'con', 'No leftover containers.');
+    function stx(c) { var st = catStat(c); return st ? (st.n ? st.n + ' · ' + bytes(st.size) + (st.safe ? ' · ' + st.safe + ' safe' : '') : 'none') : S.cscanning ? 'scanning…' : 'not scanned'; }
+    function small(c) { var st = catStat(c); return !!(st && st.n && st.n <= 25); }
+    w.appendChild(csec('app', 'Appdata folders', stx('app'), small('app'), secApp));
+    w.appendChild(csec('img', 'Docker images', stx('img'), small('img'), secImg));
+    w.appendChild(csec('vol', 'Docker volumes', stx('vol'), small('vol'), secVol));
+    w.appendChild(csec('con', 'Stopped containers', stx('con'), small('con'), secCon));
+    if (d && d.cache) w.appendChild(csec('bc', 'Docker build cache', stx('bc'), true, body(true, null, 'bc', '')));
     var q = S.qr && S.qr.rows ? S.qr.rows : null;
-    function stx(c) { var st = catStat(c); return st ? st.n + ' to review' + (st.size ? ' · ' + bytes(st.size) : '') : 'not scanned'; }
-    w.appendChild(csec('app', 'Appdata folders', stx('app'), !!(a && a.orphans && a.orphans.length), secApp));
-    w.appendChild(csec('img', 'Docker images', stx('img'), !!(d && d.images.length), secImg));
-    w.appendChild(csec('vol', 'Docker volumes', stx('vol'), !!(d && (d.volumes || []).length), secVol));
-    w.appendChild(csec('con', 'Stopped containers', stx('con'), !!(d && d.containers.length), secCon));
-    w.appendChild(csec('tpl', 'Saved templates', S.tp && S.tp.templates ? S.tp.templates.length + ' of removed containers' + (S.tp.backups.length ? ' · ' + S.tp.backups.length + ' backup(s)' : '') : 'loading', !!(S.tp && S.tp.templates && (S.tp.templates.length || S.tp.backups.length)), vTemplates()));
-    w.appendChild(csec('qua', 'Quarantine', q ? q.length + ' folder(s)' : 'loading', !!(q && q.length), vQuarantine()));
+    w.appendChild(csec('tpl', 'Saved templates', S.tp && S.tp.templates ? S.tp.templates.length + ' of removed containers' + (S.tp.backups.length ? ' · ' + S.tp.backups.length + ' backup(s)' : '') : 'loading', false, vTemplates()));
+    w.appendChild(csec('qua', 'Quarantine', q ? (q.length ? q.length + ' item(s) · ' + bytes(q.reduce(function (s2, e) { return s2 + (+e.size || 0); }, 0)) : 'empty') : 'loading', false, vQuarantine()));
     var hist = (S.hist || []).filter(function (e) { return e.type === 'cleanup'; }).slice(0, 10);
     if (hist.length) {
-      var t = h('table', { class: 'resp' }); t.appendChild(h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', null, 'Result'), h('th', null, 'What happened'))));
-      var tb = h('tbody'); t.appendChild(tb);
-      hist.forEach(function (e) { tb.appendChild(h('tr', { class: 'row' }, h('td', { 'data-l': 'Date' }, when(e.ts)), h('td', { 'data-l': 'Result' }, h('span', { class: 'badge ' + (e.result === 'failed' ? 'bad' : 'ok') }, e.result === 'failed' ? 'Failed' : 'Completed')), h('td', { 'data-l': 'What happened', class: 'name' }, h('span', { class: 'nm' }, e.name), e.message ? h('div', { class: 'muted sm' }, e.message) : null))); });
-      w.appendChild(csec('hist', 'Cleanup history', hist.length + ' recent', false, h('div', { class: 'panel' }, t)));
+      var ht = h('table', { class: 'resp' }); ht.appendChild(h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', null, 'Result'), h('th', null, 'What happened'))));
+      var hb = h('tbody'); ht.appendChild(hb);
+      hist.forEach(function (e) { hb.appendChild(h('tr', { class: 'row' }, h('td', { 'data-l': 'Date' }, when(e.ts)), h('td', { 'data-l': 'Result' }, h('span', { class: 'badge ' + (e.result === 'failed' ? 'bad' : 'ok') }, e.result === 'failed' ? 'Failed' : 'Completed')), h('td', { 'data-l': 'What happened', class: 'name' }, h('span', { class: 'nm' }, e.name), e.message ? h('div', { class: 'muted sm' }, e.message) : null))); });
+      w.appendChild(csec('hist', 'Cleanup history', hist.length + ' recent', false, ht));
     }
-    /* action bar: the same place for the same actions */
-    var s = selected(), eligibleN = 0, pickN = 0; ['app', 'img', 'vol', 'con'].forEach(function (c) { items(c).forEach(function (it) { if (it.status === 'eligible' && c !== 'vol' && c !== 'con') eligibleN++; if (pickable(it)) pickN++; }); });
-    var why = busy ? 'Wait until the current job has finished' : !s.count ? 'Select items to review first' : '';
-    w.appendChild(h('div', { class: 'cbar' }, h('div', { class: 'grow' }, h('b', null, s.count + ' selected'), h('span', { class: 'muted' }, s.count ? ' · estimated ' + bytes(s.size) : (scanned ? ' · nothing selected' : ' · scan first'))),
-      h('button', { class: 'btn', disabled: busy || !eligibleN, title: !eligibleN ? 'There is no eligible item (items marked "Review first" are never picked for you)' : 'Selects only items marked Eligible', onclick: function () { selectEligible(); } }, 'Select all eligible'),
-      h('button', { class: 'btn', disabled: busy || !pickN, title: !pickN ? 'Nothing can be selected' : 'Selects every item in every section, including "Review first" items and volumes', onclick: function () { selectAll(); } }, 'Select all'),
-      h('button', { class: 'btn', disabled: !s.count || busy, title: why, onclick: function () { S.cs = { app: {}, img: {}, vol: {}, con: {} }; render(); } }, 'Clear selection'),
-      h('button', { class: 'btn', disabled: !s.count || busy, title: why, onclick: function () { runCleanup(true); } }, 'Preview (dry run)'),
-      h('button', { class: 'btn danger', disabled: !s.count || busy, title: why, onclick: function () { runCleanup(false); } }, 'Clean Selected Items')));
+    /* selection bar, only once there is something to select */
+    if (scanned && t.n) {
+      var s = selected(), why = busy ? 'Wait until the current job has finished' : !s.count ? 'Select items first' : '';
+      w.appendChild(h('div', { class: 'cbar' }, h('div', { class: 'grow' }, h('b', null, s.count + ' selected'), h('span', { class: 'muted' }, s.count ? ' · ' + bytes(s.size) : '')),
+        h('span', { class: 'muted sm sel-lbl' }, 'Select:'),
+        h('div', { class: 'seg' },
+          h('button', { class: 'btn sm', disabled: busy || !t.safe, title: !t.safe ? 'Nothing is marked Safe' : 'Every item marked Safe', onclick: selectSafe }, 'Safe'),
+          h('button', { class: 'btn sm', disabled: busy, title: 'Every item in every section, also items marked Check first and volumes', onclick: selectAll }, 'All'),
+          h('button', { class: 'btn sm', disabled: busy || !s.count, onclick: function () { S.cs = emptySel(); render(); } }, 'None')),
+        h('button', { class: 'btn', disabled: !s.count || busy, title: why, onclick: function () { runCleanup(true); } }, 'Preview'),
+        h('button', { class: 'btn danger', disabled: !s.count || busy, title: why, onclick: function () { runCleanup(false); } }, 'Clean selected…')));
+    }
     return w;
   }
-  /* only items the server marked Eligible; "Review first", protected and in-use items are never picked */
-  function selectEligible() { S.cs = { app: {}, img: {}, vol: {}, con: {} }; ['app', 'img'].forEach(function (c) { items(c).forEach(function (it) { if (it.status === 'eligible') S.cs[c][it.key] = true; }); }); render(); }
-  /* everything the scan offers, in every section: "Review first" items, named images, leftover containers and volumes included */
-  function selectAll() { S.cs = { app: {}, img: {}, vol: {}, con: {} }; ['app', 'img', 'vol', 'con'].forEach(function (c) { items(c).forEach(function (it) { if (pickable(it)) S.cs[c][it.key] = true; }); }); render(); }
+  /* only items the scan marked Safe; "Check first", protected and in-use items are never picked */
+  function selectSafe() { S.cs = emptySel(); CATS.forEach(function (c) { items(c).forEach(function (it) { if (it.status === 'eligible') S.cs[c][it.key] = true; }); }); render(); }
+  /* everything the scan offers, in every section: "Check first" items, named images, leftover containers and volumes included */
+  function selectAll() { S.cs = emptySel(); CATS.forEach(function (c) { items(c).forEach(function (it) { if (pickable(it)) S.cs[c][it.key] = true; }); }); render(); }
   /*
    * Smart cleanup: scans first when needed, picks the items, then opens the usual confirmation with the list of operations.
-   * safe   = Select all eligible, and folders always go to quarantine (also with Safe mode off): nothing it does is final.
-   * unsafe = Select all; folders are deleted for good when Safe mode is off. The dialog says so and needs the "cannot be undone" tick.
+   * safe   = Select Safe, and folders always go to quarantine (also with Safe mode off): no data is deleted for good.
+   * unsafe = Select All; folders are deleted for good when Safe mode is off. The dialog says so and needs the "cannot be undone" tick.
    */
   function smartCleanup(mode) {
     if (S.cscanning || S.cbusy || S.ov.run.running) return;
     var go = function () {
-      if (mode === 'safe') selectEligible(); else selectAll();
+      if (mode === 'safe') selectSafe(); else selectAll();
       var n = selected().count;
-      if (!n) { toast(mode === 'safe' ? 'Nothing is marked Eligible, so a safe cleanup has nothing to do. Review the sections for items that need a closer look.' : 'The scan found nothing to clean up.'); return; }
+      if (!n) { toast(mode === 'safe' ? 'Nothing is marked Safe. Check the items in the sections below.' : 'The scan found nothing to clean up.'); return; }
       runCleanup(false, { smart: mode });
     };
     if (S.cscan) go(); else scanAll().then(function () { if (S.cscan) go(); });
   }
-  function peekFolder(o) {
-    api('appdata_peek', { id: o.id }).then(function (j) {
-      var m = modal('Inside ' + o.name);
-      if (j.error || !j.ok) { m.body.appendChild(h('p', null, j.error || 'Could not look inside.')); }
-      else {
-        m.body.appendChild(h('p', { class: 'muted' }, j.count + ' item(s) directly inside. The biggest:'));
-        j.items.forEach(function (i) { m.body.appendChild(h('div', null, i.dir ? '📁 ' : i.link ? '↪ ' : '', h('b', null, i.name), ' ', h('span', { class: 'muted' }, bytes(i.size)))); });
-        if (j.more) m.body.appendChild(h('div', { class: 'muted' }, '… and ' + j.more + ' more'));
-      }
-      m.foot.appendChild(h('button', { class: 'btn', onclick: m.close }, 'Close'));
-    });
-  }
+  function peekFolder(o) { api('appdata_peek', { id: o.id }).then(function (j) { peekList('Inside ' + o.name, j); }); }
   /* Step 3: preview (dry run) or clean. One summary lists every operation, whether it can be undone, and the warnings. */
   function runCleanup(dry, opt) {
     opt = opt || {};
     var s = selected(), safe = (S.ad ? S.ad.safe_mode : true) || opt.smart === 'safe', del = s.app.length && !safe;      // a safe smart cleanup never deletes a folder
     var m = modal(dry ? 'Preview (dry run): nothing will be changed' : (opt.smart ? 'Smart cleanup (' + opt.smart + '): clean ' : 'Clean ') + s.count + ' selected item' + (s.count === 1 ? '' : 's') + '?');
-    if (opt.smart === 'safe') m.body.appendChild(h('div', { class: 'banner ok' }, h('b', null, 'Safe: '), 'only items the scan marked Eligible. Folders are moved to quarantine, where they can be restored; only nameless (dangling) images are removed. Nothing here is final.'));
-    if (opt.smart === 'unsafe') m.body.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'Unsafe: '), 'everything the scan found is included: items marked "Review first", images with a name, leftover containers and volumes with their data' + (S.ad && !S.ad.safe_mode ? ', and folders are deleted for good because Safe mode is off' : ', while folders go to quarantine because Safe mode is on') + '. Read the list before you continue.'));
+    if (opt.smart === 'safe') m.body.appendChild(h('div', { class: 'banner ok' }, h('b', null, 'Safe: '), 'only items the scan marked Safe. Folders are moved to quarantine, where they can be restored; images are nameless leftovers or older copies; volumes are empty. No data is deleted for good.'));
+    if (opt.smart === 'unsafe') m.body.appendChild(h('div', { class: 'banner bad' }, h('b', null, 'Unsafe: '), 'everything the scan found is included: items marked "Check first", images with a name, leftover containers and volumes with their data' + (S.ad && !S.ad.safe_mode ? ', and folders are deleted for good because Safe mode is off' : ', while folders go to quarantine because Safe mode is on') + '. Read the list before you continue.'));
+    var full = s.vol.filter(function (o) { return !o.raw.empty; });      // volumes that may hold data
     var ul = h('ul', { class: 'cops' });
     if (s.app.length) ul.appendChild(h('li', null, h('b', null, s.app.length + ' appdata folder(s): '), safe ? 'moved to the hidden quarantine folder. ' : 'deleted for good. ', h('span', { class: 'badge ' + (safe ? 'ok' : 'bad') }, safe ? 'Can be restored' : 'Cannot be undone')));
-    if (s.img.length) ul.appendChild(h('li', null, h('b', null, s.img.length + ' image(s): '), 'removed from Docker (never forced). ', h('span', { class: 'badge ok' }, 'Can be downloaded again')));
+    if (s.img.length) ul.appendChild(h('li', null, h('b', null, s.img.length + ' image(s): '), 'removed from Docker (never forced). ', h('span', { class: 'badge ok' }, 'No data in them')));
     if (s.con.length) ul.appendChild(h('li', null, h('b', null, s.con.length + ' stopped container(s): '), 'removed; their appdata stays. ', h('span', { class: 'badge bad' }, 'Cannot be undone')));
-    if (s.vol.length) ul.appendChild(h('li', null, h('b', null, s.vol.length + ' volume(s): '), 'removed together with their data. ', h('span', { class: 'badge bad' }, 'Data cannot be recovered')));
+    if (s.bc.length) ul.appendChild(h('li', null, h('b', null, 'Docker build cache: '), 'the cache nothing uses is removed. ', h('span', { class: 'badge ok' }, 'Built again when needed')));
+    var kept = (S.ov.config.appdata || {}).keep_images ? s.img.filter(function (o) { return o.raw.local && !o.raw.older; }) : [];
+    if (kept.length) ul.appendChild(h('li', null, h('b', null, kept.length + ' image(s) built here: '), 'a copy is saved to quarantine first, so they can be loaded back. ', h('span', { class: 'badge ok' }, 'Can be restored')));
+    if (s.vol.length - full.length) ul.appendChild(h('li', null, h('b', null, (s.vol.length - full.length) + ' empty volume(s): '), 'removed. ', h('span', { class: 'badge ok' }, 'Nothing is lost')));
+    if (full.length) ul.appendChild(h('li', null, h('b', null, full.length + ' volume(s) with data: '), 'removed together with their data. ', h('span', { class: 'badge bad' }, 'Data cannot be recovered')));
     m.body.appendChild(ul);
-    m.body.appendChild(h('p', { class: 'muted sm' }, 'Estimated size of the selection: ' + bytes(s.size) + '. ' + (s.app.length && safe ? 'Quarantined folders still use their space until you delete them in the Quarantine section.' : '')));
+    m.body.appendChild(h('p', { class: 'muted sm' }, 'Listed size of the selection: ' + bytes(s.size) + '. ' + (s.img.length > 1 ? 'Images share layers, so less is freed' + (S.clean && S.clean.reclaim && S.clean.reclaim.images != null && s.img.length === items('img').length ? ': about ' + bytes(S.clean.reclaim.images) + ' for all of them. ' : '. ') : '') + (s.app.length && safe ? 'Quarantined folders still use their space until you delete them in the Quarantine section.' : '')));
     var warn = [];
-    var rec = s.app.filter(function (o) { return o.raw.recent; }); if (rec.length) warn.push('Changed in the last 30 days: ' + rec.map(function (o) { return o.name; }).join(', ') + '. Make sure nothing still uses ' + (rec.length > 1 ? 'them' : 'it') + '.');
-    var rv = s.app.concat(s.img, s.vol, s.con).filter(function (o) { return o.status === 'review'; }); if (rv.length) warn.push(rv.length + ' selected item(s) are marked "Review first". Check them before you continue.');
-    if (s.vol.length) warn.push('Volumes are removed with all their data.');
+    var rec = s.app.filter(function (o) { return o.raw.recent && o.status === 'review'; }); if (rec.length) warn.push('Changed in the last 30 days: ' + rec.slice(0, 5).map(function (o) { return o.name; }).join(', ') + (rec.length > 5 ? ' and ' + (rec.length - 5) + ' more' : '') + '. Make sure nothing still uses ' + (rec.length > 1 ? 'them' : 'it') + '.');
+    var rv = s.app.concat(s.img, s.vol, s.con).filter(function (o) { return o.status === 'review'; }); if (rv.length) warn.push(rv.length + ' selected item(s) are marked "Check first". Check them before you continue.');
+    if (full.length) warn.push('Volumes with data are removed with all their data.');
     warn.forEach(function (x) { m.body.appendChild(h('div', { class: 'banner warn' }, x)); });
     if (dry) {
       var out = h('div', { class: 'muted sm' }, 'Checking…'); m.body.appendChild(out);
       m.foot.appendChild(h('button', { class: 'btn', onclick: m.close }, 'Close'));
       var calls = [];
       if (s.app.length) calls.push(api('appdata_run', { dry: '1', mode: safe ? 'quarantine' : 'delete', ids: s.app.map(function (o) { return o.key; }) }));
-      if (s.img.length || s.con.length || s.vol.length) calls.push(api('cleanup_run', { dry: '1', images: s.img.map(function (o) { return o.key; }), containers: s.con.map(function (o) { return o.key; }), volumes: s.vol.map(function (o) { return o.key; }) }));
+      if (s.img.length || s.con.length || s.vol.length || s.bc.length) calls.push(api('cleanup_run', { dry: '1', cache: s.bc.length ? '1' : '', images: s.img.map(function (o) { return o.key; }), containers: s.con.map(function (o) { return o.key; }), volumes: s.vol.map(function (o) { return o.key; }) }));
       Promise.all(calls).then(function (rs) {
         clear(out); var n = 0, sk = 0;
         rs.forEach(function (r) { if (r.error || r.ok === false) { out.appendChild(h('div', { class: 'banner bad' }, r.error || 'The preview failed.')); return; } (r.would || []).forEach(function (x) { n++; out.appendChild(h('div', null, '✓ ', typeof x === 'string' ? x : x.name + (x.to ? ' → quarantine' : ''))); }); (r.skipped || []).forEach(function (x) { sk++; out.appendChild(h('div', { class: 'muted' }, '– ' + x.what + ': ' + x.why)); }); });
@@ -806,7 +854,7 @@
       });
       return;
     }
-    var cb = h('input', { type: 'checkbox' }); m.body.appendChild(h('label', { class: 'switch' }, cb, del || s.con.length || s.vol.length ? 'I understand that this cannot be undone' : 'I want to clean these items'));
+    var cb = h('input', { type: 'checkbox' }); m.body.appendChild(h('label', { class: 'switch' }, cb, del || s.con.length || full.length ? 'I understand that this cannot be undone' : 'I want to clean these items'));
     var go = h('button', { class: 'btn danger', disabled: true, onclick: function () { m.close(); doCleanup(s, safe, del); } }, 'Clean Selected Items');
     cb.addEventListener('change', function () { go.disabled = !cb.checked; });
     m.foot.appendChild(h('button', { class: 'btn', onclick: m.close }, 'Cancel')); m.foot.appendChild(go);
@@ -821,9 +869,9 @@
         (r.skipped || []).forEach(function (x) { res.skipped.push(x); }); (r.failed || []).forEach(function (x) { res.failed.push(x); });
       });
     });
-    if (s.img.length || s.con.length || s.vol.length) jobs = jobs.then(function () {
-      return api('cleanup_run', { confirm: '1', images: s.img.map(function (o) { return o.key; }), containers: s.con.map(function (o) { return o.key; }), volumes: s.vol.map(function (o) { return o.key; }) }).then(function (r) {
-        if (r.error || r.ok === false) { s.img.concat(s.con, s.vol).forEach(function (o) { res.failed.push({ what: o.name, why: r.error || 'failed' }); }); return; }
+    if (s.img.length || s.con.length || s.vol.length || s.bc.length) jobs = jobs.then(function () {
+      return api('cleanup_run', { confirm: '1', cache: s.bc.length ? '1' : '', images: s.img.map(function (o) { return o.key; }), containers: s.con.map(function (o) { return o.key; }), volumes: s.vol.map(function (o) { return o.key; }) }).then(function (r) {
+        if (r.error || r.ok === false) { s.img.concat(s.con, s.vol, s.bc).forEach(function (o) { res.failed.push({ what: o.name, why: r.error || 'failed' }); }); return; }
         (r.removed || []).forEach(function (n) { res.done.push(n); }); res.size += r.size_removed || 0; (r.skipped || []).forEach(function (x) { res.skipped.push(x); }); (r.failed || []).forEach(function (x) { res.failed.push(x); });
       });
     });
@@ -837,20 +885,21 @@
   function loadQ() { if (S.qBusy) return; S.qBusy = true; return api('quarantine_list').then(function (j) { S.qBusy = false; S.qr = j; render(); }); }
   function vQuarantine() {
     var w = h('div'), q = S.qr;
-    w.appendChild(h('div', { class: 'banner' }, 'Folders moved here are only hidden away. Restore one to put it back exactly where it was, or delete it for good to free the space. Nothing is overwritten when restoring.'));
+    w.appendChild(h('div', { class: 'banner' }, 'Folders moved here are only hidden away, and copies of removed images wait here too. Restore one to put it back exactly where it was (an image is loaded back into Docker), or delete it for good to free the space. Nothing is overwritten when restoring.'));
     if (!q) { loadQ(); w.appendChild(loading('Loading quarantine')); return w; }
     if (q.error || !q.rows) { w.appendChild(h('div', { class: 'banner bad' }, q.error || 'Could not load')); return w; }
     if (!q.rows.length) { w.appendChild(empty('fa-folder-open-o', 'Nothing is in quarantine', 'Folders you move aside on this tab appear here and can be restored or deleted.')); return w; }
-    var t = h('table', { class: 'resp' }); t.appendChild(h('thead', null, h('tr', null, h('th', null, 'Folder'), h('th', null, 'Size'), h('th', null, 'Moved'), h('th', null, 'Status'), h('th', null, ''))));
+    var t = h('table', { class: 'resp' }); t.appendChild(h('thead', null, h('tr', null, h('th', null, 'Item'), h('th', null, 'Size'), h('th', null, 'Moved'), h('th', null, 'Status'), h('th', null, ''))));
     var tb = h('tbody'); t.appendChild(tb);
     q.rows.forEach(function (e) {
-      var st = !e.exists ? ['bad', 'missing'] : !e.known_root ? ['warn', 'appdata folder not set up'] : e.free ? ['ok', 'can be restored'] : ['warn', 'original place is taken'];
+      var isImg = e.type === 'image';
+      var st = !e.exists ? ['bad', 'missing'] : !e.known_root ? ['warn', 'appdata folder not set up'] : isImg ? ['ok', 'can be loaded back'] : e.free ? ['ok', 'can be restored'] : ['warn', 'original place is taken'];
       var btns = h('td', { class: 'acts' });
       if (e.exists && e.known_root) {
-        btns.appendChild(h('button', { class: 'btn', disabled: S.ov.run.running, onclick: function () { restoreQ(e, false); } }, 'Restore'));
+        btns.appendChild(h('button', { class: 'btn', disabled: S.ov.run.running, onclick: function () { restoreQ(e, false); } }, isImg ? 'Load back' : 'Restore'));
         btns.appendChild(h('button', { class: 'btn danger', disabled: S.ov.run.running, onclick: function () { purgeQ(e); } }, 'Delete…'));
       } else if (!e.exists) btns.appendChild(h('button', { class: 'btn', onclick: function () { act('quarantine_act', { act: 'purge', id: e.id, confirm: '1' }).then(loadQ); } }, 'Forget'));
-      tb.appendChild(h('tr', { class: 'row' }, h('td', { class: 'name', 'data-l': 'Folder' }, h('span', { class: 'nm' }, e.name), h('div', { class: 'img' }, e.original)), h('td', { 'data-l': 'Size' }, bytes(e.size)), h('td', { 'data-l': 'Moved' }, ageText(e.age)),
+      tb.appendChild(h('tr', { class: 'row' }, h('td', { class: 'name', 'data-l': 'Folder' }, h('span', { class: 'nm' }, e.name), h('div', { class: 'img' }, isImg ? 'Copy of a removed image' : e.original)), h('td', { 'data-l': 'Size' }, bytes(e.size)), h('td', { 'data-l': 'Moved' }, ageText(e.age)),
         h('td', { 'data-l': 'Status' }, h('span', { class: 'badge ' + st[0] }, st[1])), btns));
     });
     w.appendChild(h('div', { class: 'panel' }, h('h3', null, 'In quarantine'), t));
@@ -865,7 +914,7 @@
         return;
       }
       if (j.error) { toast(j.error, true); return; }
-      toast('Restored ' + e.name + (j.to ? ' as ' + j.to.split('/').pop() : '')); S.ad = null; loadQ();
+      toast(e.type === 'image' ? 'Loaded ' + e.name + ' back into Docker' : 'Restored ' + e.name + (j.to ? ' as ' + j.to.split('/').pop() : '')); S.ad = null; loadQ();
     });
   }
   function purgeQ(e) {
@@ -1066,6 +1115,8 @@
     w.appendChild(section('Cleanup (appdata)', h('div', null,
       (function () { var t = h('textarea', { rows: 3, spellcheck: 'false', style: 'width:100%;max-width:420px;font-family:ui-monospace,Menlo,Consolas,monospace', 'aria-label': 'Appdata folders', oninput: function () { d.appdata.roots = t.value.split(/\n/).map(function (x) { return x.trim(); }).filter(Boolean); } }); t.value = (d.appdata.roots || []).join('\n'); return h('div', { class: 'fld' }, h('label', null, 'Appdata folders to check'), t, h('span', { class: 'hint' }, 'One folder per line, under /mnt. The Docker appdata share is /mnt/user/appdata on most servers.')); })(),
       fNum('Delete quarantined folders after', 'appdata.purge_days', 0, 365, '0 = never. Folders that stay in quarantine longer than this are deleted for good by the scheduled run.', 'days'),
+      fSwitch('Smart cleanup (safe) every week', 'appdata.auto_clean', 'The scheduled run cleans the items marked Safe once a week: folders go to quarantine, and nameless images, older image copies, empty volumes and unused build cache are removed. Items marked Check first are never touched. You get a notification with the list.'),
+      fSwitch('Keep a copy of images built on this server', 'appdata.keep_images', 'Before such an image is removed (it cannot be downloaded again), it is saved to the quarantine, where Restore loads it back into Docker. Older copies are not kept. Uses disk space until you delete the copy.'),
       fSwitch('Weekly report of what could be freed', 'appdata.report', 'A Discord / Unraid notification (it follows your Docker notification settings) when there is something to clean up. It only looks; nothing is removed.'),
       fSwitch('Safe mode', 'appdata.safe_mode', 'On: unused folders are moved to a hidden quarantine folder and can be restored. Off: the Cleanup tab can delete them for good (it still asks for confirmation).'))));
     w.appendChild(section('Appearance', h('div', { class: 'grid2' },
