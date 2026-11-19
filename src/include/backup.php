@@ -13,6 +13,80 @@ function dau_backup_dir_for($dest, $name) { return rtrim($dest, '/') . '/' . $na
 
 function dau_backup_free($dest) { $f = @disk_free_space($dest); return $f === false ? null : (float)$f; }
 
+/**
+ * Cache folders of Plex, Emby and Jellyfin inside $roots: the folders themselves, their children and grandchildren
+ * are looked at, so appdata/plex, appdata/binhex-jellyfin and appdata/jellyfin/config are all found. Everything
+ * listed is rebuilt by the server on its own (thumbnails it has to redo come from Cache, not from Metadata, which
+ * holds posters and edits and is kept). A folder only counts as a media server's when its own files say so,
+ * because "cache" and "logs" are common names:
+ *   Plex             Preferences.xml and Plug-in Support in <dir>/Library/Application Support/Plex Media Server,
+ *                    <dir>/Plex Media Server or <dir> itself
+ *   Emby / Jellyfin  <dir>/config/system.xml and <dir>/data/library.db or <dir>/data/jellyfin.db
+ * @return string[] existing folders, absolute, without a trailing slash
+ */
+function dau_media_cache_dirs(array $roots) {
+  $plex = ['Cache', 'Codecs', 'Crash Reports', 'Diagnostics', 'Drivers', 'Logs', 'Updates'];
+  $emby = ['cache', 'logs', 'log', 'transcoding-temp', 'transcodes', 'data/transcodes'];
+  $out = [];
+  $kids = function ($d) {
+    $r = [];
+    foreach (@scandir($d) ?: [] as $n) if ($n !== '.' && $n !== '..' && $n !== DAU_QDIR_NAME && is_dir("$d/$n") && !is_link("$d/$n")) $r[] = "$d/$n";
+    return $r;
+  };
+  foreach ($roots as $root) {
+    $root = rtrim((string)$root, '/');
+    if ($root === '' || !is_dir($root)) continue;
+    $cands = [$root];
+    foreach ($kids($root) as $k) { $cands[] = $k; foreach ($kids($k) as $g) $cands[] = $g; }
+    foreach ($cands as $d) {
+      foreach (["$d/Library/Application Support/Plex Media Server", "$d/Plex Media Server", $d] as $pms)    // the last one: hotio's image, where /config is the Plex folder itself
+        if (is_file("$pms/Preferences.xml") && is_dir("$pms/Plug-in Support")) foreach ($plex as $c) $out[] = "$pms/$c";
+      if (is_file("$d/config/system.xml") && (is_file("$d/data/library.db") || is_file("$d/data/jellyfin.db"))) {
+        foreach ($emby as $c) $out[] = "$d/$c";
+        if (basename($d) === 'config') { $out[] = dirname($d) . '/cache'; $out[] = dirname($d) . '/transcodes'; }   // official Jellyfin image: /config and /cache side by side
+      }
+    }
+  }
+  return array_values(array_unique(array_filter($out, function ($p) { return is_dir($p) && !is_link($p); })));
+}
+
+/**
+ * Host folders inside $roots that a Plex, Emby or Jellyfin container maps to /cache, /transcode or /transcodes,
+ * written as they appear under the root that holds them (/mnt/cache/appdata/transcode becomes /mnt/user/appdata/transcode
+ * when /mnt/user/appdata is backed up). [] when Docker does not answer.
+ * @return string[]
+ */
+function dau_media_cache_mounts(array $roots) {
+  $all = dau_inspect_all(); if (!$all) return [];
+  $out = [];
+  foreach ($all as $c) foreach ($c['Mounts'] ?? [] as $m) {
+    if (($m['Type'] ?? 'bind') !== 'bind' || !dau_is_media_cache_mount($c, $m)) continue;
+    $tail = dau_path_tail((string)($m['Source'] ?? ''));
+    if ($tail === '' || dau_has($tail, '..')) continue;
+    foreach ($roots as $root) {
+      $rt = dau_path_tail($root);
+      if ($tail !== $rt && dau_path_in($tail, $rt)) { $p = rtrim($root, '/') . substr($tail, strlen(rtrim($rt, '/'))); if (is_dir($p) && !is_link($p)) $out[] = $p; }
+    }
+  }
+  return array_values(array_unique($out));
+}
+
+/** tar --exclude pattern for one folder: its path without the leading slash, with tar's wildcard characters escaped. */
+function dau_tar_exclude($dir) { return '--exclude=' . preg_replace('/([*?\[\]\\\\])/', '\\\\$1', ltrim($dir, '/')); }
+
+/** Bytes in $dirs according to du (0 when it cannot tell). */
+function dau_du_total(array $dirs) {
+  $t = 0.0;
+  foreach ($dirs as $d) { $r = dau_run([dau_bin('du'), '-sb', $d], 600); $t += (float)preg_replace('/\s.*/s', '', trim($r['out'])); }
+  return $t;
+}
+
+/** Container folders that only hold a media server's transcoding or cache files (official Jellyfin /cache, Plex /transcode). */
+function dau_is_media_cache_mount(array $inspect, array $mount) {
+  $img = strtolower((string)($inspect['Config']['Image'] ?? ''));
+  return (bool)preg_match('#(^|/)[^/]*(plex|emby|jellyfin)[^/]*(:|@|$)#', $img) && in_array(rtrim((string)($mount['Destination'] ?? ''), '/'), ['/cache', '/transcode', '/transcodes'], true);
+}
+
 /** @return array ['ok'=>bool,'error'=>string,'files'=>[],'kinds'=>[...],'skipped'=>[reason,...]] */
 function dau_backup_run(array $cfg, $name, array $inspect) {
   $b = $cfg['global']['backup'];
@@ -54,15 +128,15 @@ function dau_backup_run(array $cfg, $name, array $inspect) {
     $paths = [];
     foreach (($inspect['Mounts'] ?? []) as $m) {
       $src = (string)($m['Source'] ?? '');
-      if (($m['Type'] ?? '') === 'bind' && preg_match('#^/mnt/[^\x00-\x1F]+$#', $src) && !dau_has($src, '..') && strpos($src . '/', rtrim($b['dest'], '/') . '/') !== 0 && is_dir($src)) $paths[] = $src;
+      if (($m['Type'] ?? '') === 'bind' && preg_match('#^/mnt/[^\x00-\x1F]+$#', $src) && !dau_has($src, '..') && strpos($src . '/', rtrim($b['dest'], '/') . '/') !== 0 && is_dir($src) && !dau_is_media_cache_mount($inspect, $m)) $paths[] = $src;
     }
     if (!$paths) $res['skipped'][] = 'appdata: this container has no host folders under /mnt';
     else {
-      $size = 0.0;
-      foreach ($paths as $p) { $r = dau_run([dau_bin('du'), '-sb', $p], 600); $size += (float)preg_replace('/\s.*/s', '', trim($r['out'])); }
+      $skip = dau_media_cache_dirs($paths);      // Plex / Emby / Jellyfin caches: rebuilt by the server, often the largest part
+      $size = max(0.0, dau_du_total($paths) - dau_du_total($skip));
       if ($need($size, 'appdata')) {
         $f = "$dir/$stamp-appdata.tar.gz"; $tmp = "$dir/.$stamp-appdata.tar.gz.partial";   // renamed only when complete: an interrupted tar never looks like a backup
-        $t = dau_run(array_merge([dau_bin('tar'), '-czf', $tmp, '--'], $paths), 3600);
+        $t = dau_run(array_merge([dau_bin('tar'), '-czf', $tmp], array_map('dau_tar_exclude', $skip), ['--'], $paths), 3600);
         if (($t['code'] === 0 || $t['code'] === 1) && !$t['timeout'] && is_file($tmp) && @rename($tmp, $f)) { $res['files'][] = $f; $res['kinds'][] = 'appdata'; }   // 1 = files changed while reading (expected, container is running)
         else { @unlink($tmp); $res['skipped'][] = 'appdata: tar failed'; }
       }

@@ -1,3 +1,7 @@
+###2026.11.20
+- Backups leave out the caches of Plex, Emby and Jellyfin: Cache, Codecs, Crash Reports, Diagnostics, Drivers, Logs and Updates of Plex; cache, logs, transcoding-temp and transcodes of Emby and Jellyfin; and a /cache or /transcode folder such a container maps inside the backed-up appdata. The server rebuilds them on its own. Libraries, settings, Metadata and watch history are kept. Applies to the scheduled appdata backup and to the backup before a container update; on the test server this is 1.3 GB less per backup.
+- A folder only counts as a media server's when its own files say so (Plex: Preferences.xml with Plug-in Support; Emby and Jellyfin: config/system.xml with their database), so another app's "cache" or "logs" folder is still backed up. Works with the linuxserver, binhex, hotio and official images.
+- The free-space check before a backup no longer counts these caches, and the backup result says how much was left out.
 ###2026.11.05
 - Smarter Cleanup: older copies of an image are marked Safe when a newer unused copy of the same repository is kept (the newest stays as the rollback copy), and so are empty folders, empty volumes, copies of a folder (app.bak-0.9, app-old, app.v1.2) next to the original, and older versions of a folder whose original is gone. The image a container's Rollback button needs is never marked Safe. On a test server this took Smart cleanup (safe) from 1 item to 282.
 - New: the Docker build cache is listed and can be cleaned (unused cache only); on the test server it was 25 GB.
