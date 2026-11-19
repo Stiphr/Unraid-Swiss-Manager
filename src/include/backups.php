@@ -172,6 +172,11 @@ function dau_bk_run($kind, array $cfg) {
     if ($r['timeout'] || trim($r['out']) === '') $res['notes'][] = 'The size of ' . $s . ' could not be measured, so free space was not checked for it.';
     $size += (float)preg_replace('/\s.*/s', '', trim($r['out']));
   }
+  $skip = $kind === 'appdata' ? array_values(array_unique(array_merge(dau_media_cache_dirs($srcs), dau_media_cache_mounts($srcs)))) : [];     // Plex / Emby / Jellyfin caches: rebuilt by the server, often the largest part
+  if ($skip) {
+    $cache = dau_du_total($skip); $size = max(0.0, $size - $cache);
+    $res['notes'][] = 'Left out: the caches of Plex, Emby or Jellyfin (' . count($skip) . ' folders' . ($cache > 0 ? ', ' . dau_bytes_text($cache) : '') . '). The server rebuilds them.';
+  }
   $free = dau_backup_free($dir);
   if ($free !== null && $size > 0 && $size > $free) { $res['error'] = 'Not enough free space at the destination: about ' . dau_bytes_text($size) . ' to back up, ' . dau_bytes_text($free) . ' free. Nothing was changed.'; return $res; }
   $stamp = date('Ymd-His', $t0);
@@ -181,6 +186,7 @@ function dau_bk_run($kind, array $cfg) {
     foreach ((array)$b['exclude'] as $x) $argv[] = '--exclude=' . ltrim($s, '/') . '/' . $x;
     $argv[] = '--exclude=' . ltrim($s, '/') . '/' . DAU_QDIR_NAME;    // folders already set aside by Cleanup are not worth backing up again
   }
+  foreach ($skip as $d) $argv[] = dau_tar_exclude($d);
   $argv[] = '--';
   foreach ($srcs as $s) $argv[] = ltrim($s, '/');
   $stopped = [];
