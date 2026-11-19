@@ -244,7 +244,7 @@ t('cleanup: copies of a folder are Safe when the original is there, and older ve
   eq($by['tool.v1.10']['status'], 'review', 'the newest version (1.10 > 1.9) is kept'); eq($by['tool.v1.9']['status'], 'eligible'); has($by['tool.v1.9']['reason'], 'the newer tool.v1.10 is kept');
   eq($by['tool.v1.2']['status'], 'review', 'a saved template points to it');
   eq($by['lone.v2']['status'], 'review', 'a single version of a gone folder is not a copy of anything'); eq($by['site_20260101']['status'], 'review');
-  eq(dau_folder_copy_parts('undash-docker.bak-0.9.7'), ['undash-docker', '0.9.7']); eq(dau_folder_copy_parts('trackerpilot-src.v0.12.1'), ['trackerpilot-src', '0.12.1']); eq(dau_folder_copy_parts('plex'), null);
+  eq(dau_folder_copy_parts('webapp-docker.bak-0.9.7'), ['webapp-docker', '0.9.7']); eq(dau_folder_copy_parts('myapp-src.v0.12.1'), ['myapp-src', '0.12.1']); eq(dau_folder_copy_parts('plex'), null);
   @unlink(DAU_TEMPLATES . '/my-pinned.xml');
 });
 
