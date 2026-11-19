@@ -154,6 +154,8 @@ function dau_discord_event_embed(array $ev, $server) {
     'backup_done'     => ['💾', 'Backup completed', 0x2ECC71],
     'backup_failed'   => ['❌', 'Backup FAILED', 0xE74C3C],
     'cleanup_report'  => ['🧹', 'Cleanup: things you can free', 0x3498DB],
+    'cleanup_auto'    => ['🧹', 'Cleanup: Smart cleanup (safe) done', 0x2ECC71],
+    'cleanup_auto_failed' => ['🧹', 'Cleanup: Smart cleanup (safe) had problems', 0xE67E22],
     'major_jump'      => ['🛑', 'Major version update held back', 0xE67E22],
     'rolled_back'     => ['⏪', 'Rolled back to the earlier image', 0xE67E22],
     'rollback_failed' => ['❌', 'Rollback failed', 0xE74C3C],

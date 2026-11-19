@@ -308,7 +308,7 @@ function dau_job_finish(array &$J) {
             'os_withdrawn' => ['update withdrawn', 'normal'], 'os_check_failed' => ['update check failed', 'warning'], 'os_installed' => ['now installed', 'normal'],
             'os_staged' => ['update installed, reboot needed', 'warning'], 'os_rebooting' => ['rebooting to finish the update', 'warning'], 'os_reboot_blocked' => ['reboot postponed', 'warning'],
             'os_install_failed' => ['update FAILED, nothing was rebooted', 'alert'], 'os_workflow_started' => ['pre-update maintenance started', 'normal'], 'os_workflow_done' => ['pre-update checks passed', 'normal'],
-            'os_awaiting' => ['waiting for your confirmation', 'warning'], 'os_prereq_failed' => ['update STOPPED, a prerequisite failed', 'alert'], 'os_aborted' => ['update aborted', 'warning'], 'rolled_back' => ['rolled back to the earlier image', 'warning'], 'removed' => ['removed', 'normal'], 'remove_failed' => ['removal FAILED', 'alert'], 'recovered' => ['interrupted job recovered', 'alert'], 'backup_done' => ['backup completed', 'normal'], 'backup_failed' => ['backup FAILED', 'alert'], 'rollback_failed' => ['rollback FAILED', 'alert'], 'major_jump' => ['major version update held back', 'warning'], 'cleanup_report' => ['space you can free', 'normal'], 'os_verified' => ['update verified after reboot', 'normal'], 'os_unverified' => ['update is NOT active after reboot', 'alert']];
+            'os_awaiting' => ['waiting for your confirmation', 'warning'], 'os_prereq_failed' => ['update STOPPED, a prerequisite failed', 'alert'], 'os_aborted' => ['update aborted', 'warning'], 'rolled_back' => ['rolled back to the earlier image', 'warning'], 'removed' => ['removed', 'normal'], 'remove_failed' => ['removal FAILED', 'alert'], 'recovered' => ['interrupted job recovered', 'alert'], 'backup_done' => ['backup completed', 'normal'], 'backup_failed' => ['backup FAILED', 'alert'], 'rollback_failed' => ['rollback FAILED', 'alert'], 'major_jump' => ['major version update held back', 'warning'], 'cleanup_report' => ['space you can free', 'normal'], 'cleanup_auto' => ['Smart cleanup (safe) done', 'normal'], 'cleanup_auto_failed' => ['Smart cleanup (safe) had problems', 'warning'], 'os_verified' => ['update verified after reboot', 'normal'], 'os_unverified' => ['update is NOT active after reboot', 'alert']];
     list($t, $imp) = $map[$e['kind']] ?? [$e['kind'], 'normal'];
     $d = trim(($e['installed'] ?? '') && ($e['available'] ?? '') ? $e['installed'] . ' -> ' . $e['available'] : '');
     $d .= ' ' . (($e['error'] ?? '') ?: ($e['reason'] ?? '')) . ($e['type'] === 'cleanup' ? ' ' . ($e['detail'] ?? '') : '') . (!empty($e['next']) && $e['type'] === 'os' ? ' ' . $e['next'] : '');
@@ -328,8 +328,36 @@ function dau_job_finish(array &$J) {
 /* ---------------- cleanup report (looks only; deletes nothing except quarantine that outlived its time, if you set one) ---------------- */
 
 function dau_cleanup_due(array $cfg, array $st, $now) {
-  if (empty($cfg['appdata']['report']) && (int)($cfg['appdata']['purge_days'] ?? 0) < 1) return false;
+  if (empty($cfg['appdata']['report']) && empty($cfg['appdata']['auto_clean']) && (int)($cfg['appdata']['purge_days'] ?? 0) < 1) return false;
   return $now - (int)($st['cleanup']['at'] ?? 0) >= 86400;
+}
+
+/** Smart cleanup (safe) without a person: every item marked Safe, folders always to quarantine. Never "Check first" items. */
+function dau_cleanup_auto(array $cfg) {
+  $res = ['done' => [], 'failed' => [], 'size' => 0];
+  $a = dau_appdata_scan($cfg);
+  if (!empty($a['ok'])) {
+    $ids = []; $size = []; foreach ($a['orphans'] as $o) if ($o['status'] === 'eligible') { $ids[] = $o['id']; $size[$o['name']] = $o['size']; }
+    if ($ids) {
+      $r = dau_appdata_run($ids, 'quarantine', false, false);
+      foreach ($r['done'] ?? [] as $n) { $res['done'][] = 'Folder ' . $n . ' (to quarantine)'; }
+      foreach (array_merge($r['failed'] ?? [], empty($r['ok']) ? [['what' => 'appdata folders', 'why' => $r['error'] ?? 'failed']] : []) as $f) $res['failed'][] = $f;
+    }
+  }
+  $d = dau_cleanup_scan(true);
+  if (!empty($d['ok'])) {
+    $imgs = []; $vols = [];
+    foreach ($d['images'] as $i) if ($i['status'] === 'eligible') $imgs[] = $i['id'];
+    foreach ($d['volumes'] ?? [] as $v) if ($v['status'] === 'eligible') $vols[] = $v['name'];
+    $cache = !empty($d['cache']);
+    if ($imgs || $vols || $cache) {
+      $r = dau_cleanup_run($imgs, [], $vols, false, $cache);
+      foreach ($r['removed'] ?? [] as $n) $res['done'][] = ucfirst($n);
+      foreach ($r['failed'] ?? [] as $f) $res['failed'][] = $f;
+      $res['size'] += (int)($r['size_removed'] ?? 0);
+    }
+  }
+  return $res;
 }
 
 function dau_job_cleanup(array &$J) {
@@ -337,12 +365,25 @@ function dau_job_cleanup(array &$J) {
   try {
     dau_quarantine_expire($cfg);
     $sum = dau_cleanup_summary();
-    $sum['reported'] = $prev['reported'] ?? ''; $sum['reported_at'] = (int)($prev['reported_at'] ?? 0);
+    $sum['reported'] = $prev['reported'] ?? ''; $sum['reported_at'] = (int)($prev['reported_at'] ?? 0); $sum['auto_at'] = (int)($prev['auto_at'] ?? 0);
+    /* Smart cleanup (safe) on schedule: once a week, only items marked Safe, folders to quarantine. Then the numbers are read again. */
+    if (!empty($cfg['appdata']['auto_clean']) && $now - $sum['auto_at'] >= 7 * 86400) {
+      $sum['auto_at'] = $now;
+      $res = dau_cleanup_auto($cfg);
+      if ($res['done'] || $res['failed']) {
+        $detail = implode("\n", array_slice(array_merge($res['done'], array_map(function ($f) { return 'Failed: ' . $f['what'] . ' (' . $f['why'] . ')'; }, $res['failed'])), 0, 25));
+        $J['events'][] = dau_ev('cleanup', 'Smart cleanup (safe)', $res['failed'] ? 'cleanup_auto_failed' : 'cleanup_auto', ['detail' => $detail, 'error' => $res['failed'] ? count($res['failed']) . ' item(s) could not be cleaned.' : '', 'reason' => count($res['done']) . ' item(s) cleaned, about ' . dau_bytes_text($res['size']) . '. Folders went to quarantine and can be restored.']);
+        dau_history_add(['type' => 'cleanup', 'name' => 'Scheduled Smart cleanup (safe)', 'action' => 'cleanup', 'result' => $res['failed'] ? 'failed' : 'cleaned', 'started' => $now, 'finished' => dau_now(), 'trigger' => 'scheduled',
+          'message' => count($res['done']) . ' cleaned (about ' . dau_bytes_text($res['size']) . '), ' . count($res['failed']) . ' failed.', 'error' => $res['failed'] ? $res['failed'][0]['what'] . ': ' . $res['failed'][0]['why'] : ''], $cfg['history']['max_entries']);
+        $keep = ['reported' => $sum['reported'], 'reported_at' => $sum['reported_at'], 'auto_at' => $sum['auto_at']];
+        $sum = array_merge(dau_cleanup_summary(), $keep);
+      }
+    }
     $items = $sum['appdata']['n'] + $sum['images']['n'] + $sum['volumes']['n'] + $sum['containers']['n'];
     $sig = md5(json_encode([$sum['appdata']['n'], $sum['images']['n'], $sum['volumes']['n'], $sum['containers']['n']]));
     if (!empty($cfg['appdata']['report']) && $items > 0 && $sig !== $sum['reported'] && $now - $sum['reported_at'] >= 7 * 86400) {
-      $line = function ($t, $x) { return $x['n'] ? "$t: " . $x['n'] . ' (' . dau_bytes_text($x['size']) . ')' : null; };
-      $detail = implode("\n", array_filter([$line('Unused appdata folders', $sum['appdata']), $line('Unused images', $sum['images']), $line('Unused volumes', $sum['volumes']), $line('Leftover containers', $sum['containers'])]));
+      $line = function ($t, $x) { return !empty($x['n']) ? "$t: " . $x['n'] . ' (' . dau_bytes_text($x['size']) . ')' : null; };
+      $detail = implode("\n", array_filter([$line('Unused appdata folders', $sum['appdata']), $line('Unused images', $sum['images']), $line('Unused volumes', $sum['volumes']), $line('Leftover containers', $sum['containers']), $line('Docker build cache', $sum['cache'] ?? []), $line('Marked Safe', $sum['safe'] ?? [])]));
       $J['events'][] = dau_ev('cleanup', 'Appdata, images and volumes', 'cleanup_report', ['detail' => $detail, 'error' => '', 'reason' => 'Nothing was removed. Open the Cleanup tab to review.']);
       $sum['reported'] = $sig; $sum['reported_at'] = $now;
     }

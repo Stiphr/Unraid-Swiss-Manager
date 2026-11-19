@@ -186,7 +186,7 @@
 .dau details.csec>summary::-webkit-details-marker{display:none}
 .dau details.csec>summary::before{content:'\25B8';margin-right:8px;color:var(--muted)}.dau details.csec[open]>summary::before{content:'\25BE'}
 .dau details.csec>summary b{flex:1}.dau details.csec .cbody{padding:0 16px 14px}
-.dau .big{font-size:30px;font-weight:700;line-height:1.2}.dau .rules{margin:6px 0 10px;flex-wrap:wrap}
+.dau .big{font-size:30px;font-weight:700;line-height:1.2}.dau .big .big-u{font-size:15px;font-weight:500;color:var(--muted)}.dau tr.grp td{background:var(--soft)}.dau tr.sub td.name{padding-left:22px}.dau .rules{margin:6px 0 10px;flex-wrap:wrap}
 .dau .chero{display:flex;flex-wrap:wrap;gap:14px 20px;align-items:center}.dau .chero>.grow{flex:1;min-width:220px}
 .dau .chero-acts{display:flex;gap:8px;flex-wrap:wrap}.dau .chero-note{flex-basis:100%;margin:0;padding-top:12px;border-top:1px solid var(--line)}
 .dau .seg{display:inline-flex}.dau .seg .btn{border-radius:0;margin-left:-1px}.dau .seg .btn:first-child{border-radius:var(--r) 0 0 var(--r);margin-left:0}.dau .seg .btn:last-child{border-radius:0 var(--r) var(--r) 0}

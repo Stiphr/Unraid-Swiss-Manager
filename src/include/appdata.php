@@ -66,6 +66,49 @@ function dau_dir_size($p) {
   return preg_match('/^(\d+)\s/', $r['out'], $m) ? (int)$m[1] : 0;
 }
 
+/**
+ * A copy by its name: a version, backup or date suffix ("app.v1.2", "app.bak-0.9", "app-old", "app_20261001", "app~").
+ * Returns [base name, version or ''] or null.
+ */
+function dau_folder_copy_parts($name) {
+  if (preg_match('/^(.+?)[._-](?:bak|backup|old|orig|copy|prev|previous)(?:[._-](.*))?$/i', $name, $m)) return [$m[1], $m[2] ?? ''];     // first: "app.bak-0.9" is a backup of "app"
+  if (preg_match('/^(.+?)[._-](v?\d+(?:\.\d+)+)$/', $name, $m) || preg_match('/^(.+?)\.(v\d+)$/', $name, $m)) return [$m[1], ltrim($m[2], 'v')];
+  if (preg_match('/^(.+?)[._-]((?:19|20)\d{6}(?:[-_T]?\d{4,6})?)$/', $name, $m)) return [$m[1], $m[2]];
+  if (preg_match('/^(.+?)~$/', $name, $m)) return [$m[1], ''];
+  return null;
+}
+
+/** The folder this one is a copy of, when that folder is still there next to it; '' otherwise. */
+function dau_folder_copy_of($name, $root) {
+  $p = dau_folder_copy_parts($name);
+  if (!$p || $p[0] === '' || $p[0] === $name) return '';
+  $base = $root . '/' . $p[0];
+  return (is_dir($base) && !is_link($base)) ? $p[0] : '';
+}
+
+/**
+ * Copies whose original is gone: of several versions of one folder ("app.v1", "app.v2", "app.v3") the newest stays "review",
+ * the older ones are Safe. Folders a saved template points to are never marked.
+ */
+function dau_mark_older_folder_copies(array &$orph) {
+  $by = [];
+  foreach ($orph as $k => $o) { if ($o['copy_of'] !== '' || $o['tpl'] || $o['empty']) continue; $p = dau_folder_copy_parts($o['name']); if ($p) $by[$o['root'] . '|' . $p[0]][] = [$k, $p[1]]; }
+  foreach ($by as $key => $list) {
+    if (count($list) < 2) continue;
+    usort($list, function ($a, $b) use ($orph) {      // newest first: by version when both have one, else by the time they last changed
+      if ($a[1] !== '' && $b[1] !== '' && preg_match('/^[\d.]+$/', $a[1] . $b[1])) return version_compare($b[1], $a[1]);
+      return $orph[$a[0]]['age'] <=> $orph[$b[0]]['age'];
+    });
+    $base = explode('|', $key, 2)[1]; $newest = $orph[$list[0][0]]['name'];
+    foreach ($list as $i => $x) {
+      $orph[$x[0]]['copy_of'] = $base;
+      if ($i === 0) continue;
+      $orph[$x[0]]['status'] = 'eligible';
+      $orph[$x[0]]['reason'] = 'An older copy of ' . $base . ': the newer ' . $newest . ' is kept, and no container uses this one.';
+    }
+  }
+}
+
 /** True only for a real directory that could be read and holds no entry at all. A size of 0 is not enough: du also says 0 when it fails. */
 function dau_dir_empty($p) {
   if (!is_dir($p) || is_link($p)) return false;
@@ -119,10 +162,13 @@ function dau_appdata_scan(?array $cfg = null) {
       $row['empty'] = dau_dir_empty($path);
       $why = ['No container (running or stopped) uses this folder.']; if ($row['recent']) $why[] = 'It changed in the last 30 days, so something may still write to it.'; if ($row['tpl']) $why[] = 'A saved template (' . implode(', ', $row['tpl']) . ') still points here.';
       if ($row['empty']) $why = ['No container (running or stopped) uses this folder, and it is empty.'];     // nothing in it can be lost
-      $row['status'] = ($row['empty'] || (!$row['recent'] && !$row['tpl'])) ? 'eligible' : 'review'; $row['reason'] = implode(' ', $why);
+      $row['copy_of'] = $row['tpl'] ? '' : dau_folder_copy_of($e, $root);      // "app.v1.2", "app.bak-3", "app-old" next to "app"
+      if ($row['copy_of'] !== '' && !$row['empty']) $why = ['A copy of ' . $row['copy_of'] . ', which is still there next to it, and no container uses this copy.'];
+      $row['status'] = ($row['empty'] || $row['copy_of'] !== '' || (!$row['recent'] && !$row['tpl'])) ? 'eligible' : 'review'; $row['reason'] = implode(' ', $why);
       $orph[] = $row;
     }
   }
+  dau_mark_older_folder_copies($orph);
   usort($orph, function ($a, $b) { return $b['size'] <=> $a['size']; });
   $total = 0; foreach ($orph as $o) $total += $o['size'];
   return ['ok' => true, 'roots' => $roots, 'orphans' => $orph, 'in_use' => count($busy), 'in_use_rows' => array_slice($busy, 0, 300), 'protected' => $prot, 'broad' => array_keys($broad), 'ignored' => array_values(array_unique($ignored)),
@@ -181,7 +227,9 @@ function dau_quarantine_list() {
   $q = dau_quarantine_load(); $roots = dau_appdata_roots(); $now = dau_now(); $rows = [];
   foreach ($q as $e) {
     $exists = is_dir($e['path']) && !is_link($e['path']);
-    $rows[] = $e + ['exists' => $exists, 'free' => !file_exists($e['original']), 'age' => max(0, $now - (int)$e['at']), 'known_root' => in_array($e['root'], $roots, true)];
+    $img = ($e['type'] ?? '') === 'image';
+    if ($img) $exists = is_file($e['path']) && !is_link($e['path']);
+    $rows[] = $e + ['type' => 'folder', 'exists' => $exists, 'free' => $img ? true : !file_exists($e['original']), 'age' => max(0, $now - (int)$e['at']), 'known_root' => in_array($e['root'], $roots, true)];
   }
   return ['ok' => true, 'rows' => array_reverse($rows)];
 }
@@ -192,6 +240,17 @@ function dau_quarantine_act($id, $act, $suffix = false) {
   if ($i === null) return ['ok' => false, 'error' => 'That entry is not in quarantine any more.'];
   $e = $q[$i]; $roots = dau_appdata_roots();
   if (!in_array($e['root'], $roots, true)) return ['ok' => false, 'error' => 'Its appdata folder is not set up any more.'];
+  if (($e['type'] ?? '') === 'image') {      // a copy of a removed image, saved by "docker image save"
+    $qd = realpath($e['root'] . '/' . DAU_QDIR_NAME . '/images'); $real = @realpath($e['path']);
+    if (!$real) { unset($q[$i]); dau_quarantine_save($q); return ['ok' => true, 'note' => 'The copy was already gone; the entry was removed.']; }
+    if (!$qd || dirname($real) !== $qd || is_link($e['path']) || !is_file($real)) return ['ok' => false, 'error' => 'The copy is not where it was put.'];
+    if ($act === 'restore') {
+      $r = dau_docker(['image', 'load', '-i', $real], 1800);
+      if ($r['code'] !== 0) return ['ok' => false, 'error' => dau_clip(dau_redact(trim($r['err'])), 150) ?: 'Docker could not load it'];
+    } elseif ($act !== 'purge') return ['ok' => false, 'error' => 'Unknown action'];
+    if (!@unlink($real)) return ['ok' => false, 'error' => 'could not be removed'];
+    unset($q[$i]); dau_quarantine_save($q); return $act === 'restore' ? ['ok' => true, 'to' => 'Docker'] : ['ok' => true, 'freed' => (int)$e['size']];
+  }
   $qd = realpath($e['root'] . '/' . DAU_QDIR_NAME);
   $real = @realpath($e['path']);
   if (!$qd || !$real || dirname($real) !== $qd || is_link($e['path'])) { 
@@ -215,6 +274,27 @@ function dau_quarantine_act($id, $act, $suffix = false) {
     unset($q[$i]); dau_quarantine_save($q); return ['ok' => true, 'to' => $dest];
   }
   return ['ok' => false, 'error' => 'Unknown action'];
+}
+
+/** Keep a copy before an image is removed: only when switched on, and only for an image built here that is not an older copy (those have a newer copy anyway). */
+function dau_image_keep_wanted(array $img) {
+  return !empty(dau_load_config()['appdata']['keep_images']) && !empty($img['local']) && empty($img['older']) && !empty($img['tags']);
+}
+
+/** "docker image save" into the quarantine of the first appdata folder; it appears in the Quarantine list and can be loaded back. */
+function dau_image_keep(array $img) {
+  $roots = dau_appdata_roots(); if (!$roots) return ['ok' => false, 'error' => 'no appdata folder is set up'];
+  $root = $roots[0]; $qd = $root . '/' . DAU_QDIR_NAME . '/images';
+  if (!is_dir($qd) && !@mkdir($qd, 0700, true)) return ['ok' => false, 'error' => 'the quarantine folder could not be created'];
+  $stamp = gmdate('Ymd-His', dau_now());
+  $file = $qd . '/' . trim(preg_replace('/[^A-Za-z0-9._-]+/', '_', $img['tags'][0]), '._') . '__' . $stamp . '.tar';
+  if (file_exists($file)) return ['ok' => false, 'error' => 'a copy with this name already exists'];
+  $r = dau_docker(array_merge(['image', 'save', '-o', $file], $img['tags']), 1800);
+  if ($r['code'] !== 0 || !is_file($file)) { @unlink($file); return ['ok' => false, 'error' => dau_clip(dau_redact(trim($r['err'])), 150) ?: 'docker image save failed']; }
+  $q = dau_quarantine_load();
+  $q[] = ['id' => substr(hash('sha256', $file . $stamp), 0, 12), 'type' => 'image', 'name' => implode(', ', $img['tags']), 'original' => '', 'path' => $file, 'root' => $root, 'size' => (int)filesize($file), 'at' => dau_now()];
+  dau_quarantine_save($q);
+  return ['ok' => true, 'file' => $file];
 }
 
 /* ---------------- saved templates of containers that no longer exist ---------------- */
@@ -309,16 +389,19 @@ function dau_quarantine_expire(array $cfg) {
  */
 function dau_cleanup_summary($a = null, $d = null) {
   $cfg = dau_load_config(); $z = ['n' => 0, 'size' => 0];
-  $sum = ['at' => dau_now(), 'appdata' => $z, 'images' => $z, 'volumes' => $z, 'containers' => $z, 'safe' => $z, 'quarantine' => count(dau_quarantine_load())];
+  $sum = ['at' => dau_now(), 'appdata' => $z, 'images' => $z, 'volumes' => $z, 'containers' => $z, 'cache' => $z, 'safe' => $z, 'freeable' => null, 'quarantine' => count(dau_quarantine_load())];
   $safe = function (array $rows) use (&$sum) { foreach ($rows as $r) if (($r['status'] ?? '') === 'eligible') { $sum['safe']['n']++; $sum['safe']['size'] += (int)($r['size'] ?? 0); } };
   $a = $a ?: dau_appdata_scan($cfg);
   if (!empty($a['ok'])) { $sum['appdata'] = ['n' => count($a['orphans']), 'size' => $a['total']]; $safe($a['orphans']); }
-  $d = $d ?: dau_cleanup_scan();
+  $d = $d ?: dau_cleanup_scan(true);
   if (!empty($d['ok'])) {
     $sum['images'] = ['n' => count($d['images']), 'size' => array_sum(array_column($d['images'], 'size'))];
     $sum['containers'] = ['n' => count($d['containers']), 'size' => array_sum(array_column($d['containers'], 'size'))];
     $sum['volumes'] = ['n' => count($d['volumes'] ?? []), 'size' => array_sum(array_column($d['volumes'] ?? [], 'size'))];
     $safe($d['images']); $safe($d['containers']); $safe($d['volumes'] ?? []);
+    if (!empty($d['cache'])) { $sum['cache'] = ['n' => 1, 'size' => (int)$d['cache']['size']]; $safe([$d['cache']]); }
+    /* space a full cleanup would really free: images as Docker counts them (shared layers once), the rest as measured */
+    if (isset($d['reclaim']['images'])) $sum['freeable'] = (int)$d['reclaim']['images'] + $sum['cache']['size'] + $sum['appdata']['size'] + $sum['volumes']['size'] + $sum['containers']['size'];
   }
   return $sum;
 }

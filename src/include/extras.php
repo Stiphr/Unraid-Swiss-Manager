@@ -258,11 +258,34 @@ function dau_mark_older_copies(array &$imgs) {
  * Unused images and leftover containers, with sizes. Nothing is removed here.
  * Images: dangling (no name) or not used by any container. Containers: stopped, not created from an Unraid template, not compose.
  */
-function dau_cleanup_scan() {
+/** "4.691GB (10%)" -> bytes. Docker prints decimal units. */
+function dau_docker_bytes($s) {
+  if (!preg_match('/^\s*([\d.]+)\s*([kKMGTP]?B)\b/', (string)$s, $m)) return 0;
+  $u = ['B' => 1, 'kB' => 1e3, 'KB' => 1e3, 'MB' => 1e6, 'GB' => 1e9, 'TB' => 1e12, 'PB' => 1e15];
+  return (int)round((float)$m[1] * ($u[$m[2]] ?? 1));
+}
+
+/**
+ * What Docker itself says can be freed: every unused image together (layers they share are counted once) and the unused build cache.
+ * null when Docker cannot tell. It takes a few seconds, so only the full scan asks.
+ */
+function dau_docker_reclaim() {
+  $r = dau_docker(['system', 'df', '--format', '{{.Type}}|{{.Reclaimable}}'], 90);
+  if ($r['code'] !== 0 || trim($r['out']) === '') return null;
+  $o = ['images' => null, 'cache' => null];
+  foreach (preg_split('/\R/', trim($r['out'])) as $l) {
+    $p = explode('|', $l, 2); if (count($p) < 2) continue;
+    if ($p[0] === 'Images') $o['images'] = dau_docker_bytes($p[1]);
+    if ($p[0] === 'Build Cache') $o['cache'] = dau_docker_bytes($p[1]);
+  }
+  return $o;
+}
+
+function dau_cleanup_scan($full = false) {
   $cs = dau_containers();
   if ($cs === null) return ['ok' => false, 'error' => 'The Docker service is not running.'];
-  $used = [];
-  foreach ($cs as $c) $used[$c['image_id']] = true;
+  $used = []; $repoUse = [];
+  foreach ($cs as $c) { $used[$c['image_id']] = true; if (($c['image'] ?? '') !== '') $repoUse[dau_image_repo(preg_replace('/@sha256:.*$/', '', $c['image']))][] = $c['name']; }
   $r = dau_docker(['image', 'ls', '-a', '--no-trunc', '--format', '{{.ID}}|{{.Repository}}|{{.Tag}}|{{.CreatedSince}}'], 60);
   $imgs = [];
   foreach (preg_split('/\R/', trim($r['out'])) as $line) {
@@ -272,11 +295,17 @@ function dau_cleanup_scan() {
     if ($f[1] !== '<none>') { $imgs[$f[0]]['tags'][] = $f[1] . ($f[2] !== '<none>' ? ':' . $f[2] : ''); $imgs[$f[0]]['dangling'] = false; $imgs[$f[0]]['status'] = 'review'; $imgs[$f[0]]['reason'] = 'It was downloaded earlier and no container uses it now. Check that you do not need it; it can be downloaded again.'; }
   }
   if ($imgs) {
-    $r = dau_docker(array_merge(['image', 'inspect', '--format', '{{.Id}} {{.Size}} {{.Created}}'], array_keys($imgs)), 60);
+    $r = dau_docker(array_merge(['image', 'inspect', '--format', '{{.Id}} {{.Size}} {{.Created}} {{len .RepoDigests}}'], array_keys($imgs)), 60);
     foreach (preg_split('/\R/', trim($r['out'])) as $line) {
       $p = explode(' ', trim($line)); if (count($p) < 2 || !isset($imgs[$p[0]])) continue;
       $imgs[$p[0]]['size'] = (int)$p[1];
       $imgs[$p[0]]['ts'] = isset($p[2]) ? (int)strtotime(preg_replace('/\.\d+/', '', $p[2])) : 0;     // nanoseconds dropped: strtotime cannot read them
+      $imgs[$p[0]]['local'] = isset($p[3]) && $p[3] === '0' && !$imgs[$p[0]]['dangling'];          // no registry digest: built here, it cannot be downloaded again
+      if ($imgs[$p[0]]['local']) $imgs[$p[0]]['reason'] = 'It was built on this server, so it cannot be downloaded again, and no container uses it now. Check that you do not need it.';
+    }
+    foreach ($imgs as $id => $i) {      // which containers run another version of the same image: it helps to decide
+      $by = []; foreach ($i['tags'] as $t) foreach ($repoUse[dau_image_repo($t)] ?? [] as $n) $by[] = $n;
+      $imgs[$id]['repo_used_by'] = array_values(array_unique($by));
     }
     dau_mark_older_copies($imgs);
     /* the image a container's Rollback button would go back to is never picked for you */
@@ -319,7 +348,43 @@ function dau_cleanup_scan() {
   $imgs = array_values($imgs);
   usort($imgs, function ($a, $b) { return $b['size'] <=> $a['size']; });
   $total = 0; foreach ($imgs as $i) $total += $i['size']; foreach ($orph as $o) $total += $o['size']; foreach ($vols as $v) $total += $v['size'];
-  return ['ok' => true, 'images' => $imgs, 'containers' => $orph, 'volumes' => $vols, 'in_use_images' => count($used), 'total' => $total, 'total_text' => dau_bytes_text($total)];
+  $out = ['ok' => true, 'images' => $imgs, 'containers' => $orph, 'volumes' => $vols, 'in_use_images' => count($used), 'total' => $total, 'total_text' => dau_bytes_text($total)];
+  if ($full) {
+    $rc = dau_docker_reclaim(); $out['reclaim'] = $rc;
+    $out['cache'] = $rc && $rc['cache'] > 0 ? ['name' => 'Docker build cache', 'size' => $rc['cache'], 'status' => 'eligible',
+      'reason' => 'Layers Docker keeps from earlier image builds to make the next build faster. Only cache that nothing uses is removed; the next build just takes longer.'] : null;
+  }
+  return $out;
+}
+
+/** What is inside an unused volume (to decide on a "Check first" volume). Only a volume no container uses, and only its own folder. */
+function dau_volume_peek($name) {
+  if (!dau_valid_name($name)) return ['ok' => false, 'error' => 'Bad volume name'];
+  $r = dau_docker(['volume', 'ls', '-q', '-f', 'dangling=true'], 30);
+  if (!in_array($name, array_map('trim', preg_split('/\R/', $r['out'])), true)) return ['ok' => false, 'error' => 'That volume is in use or gone.'];
+  $r = dau_docker(['volume', 'inspect', '--format', '{{.Mountpoint}}', $name], 30); $mp = trim($r['out']);
+  $real = @realpath($mp);
+  if ($real === false || strpos($real, '/var/lib/docker/volumes/') !== 0 || !is_dir($real)) return ['ok' => false, 'error' => 'Its folder cannot be read.'];
+  $items = []; $n = 0;
+  foreach (@scandir($real) ?: [] as $e) {
+    if ($e === '.' || $e === '..') continue;
+    $n++; if (count($items) >= 200) continue;
+    $p = $real . '/' . $e; $link = is_link($p); $dir = !$link && is_dir($p);
+    $items[] = ['name' => $e, 'dir' => $dir, 'link' => $link, 'size' => $link ? 0 : ($dir ? 0 : (int)@filesize($p))];
+  }
+  foreach ($items as $i => $it) if ($it['dir'] && $i < 25) $items[$i]['size'] = dau_dir_size($real . '/' . $it['name']);
+  usort($items, function ($a, $b) { return $b['size'] <=> $a['size']; });
+  return ['ok' => true, 'name' => $name, 'count' => $n, 'items' => array_slice($items, 0, 15), 'more' => max(0, $n - 15)];
+}
+
+/** The last lines a leftover (stopped) container wrote, secrets redacted. Only for containers the cleanup scan lists. */
+function dau_container_logs($name) {
+  if (!dau_valid_name($name)) return ['ok' => false, 'error' => 'Bad container name'];
+  $scan = dau_cleanup_scan();
+  if (empty($scan['ok']) || !in_array($name, array_column($scan['containers'], 'name'), true)) return ['ok' => false, 'error' => 'That is not a leftover container any more.'];
+  $r = dau_docker(['logs', '--tail', '40', $name], 30);
+  $lines = array_slice(preg_split('/\R/', trim($r['out'] . "\n" . $r['err'])), -40);
+  return ['ok' => true, 'name' => $name, 'log' => dau_redact(implode("\n", array_filter($lines, 'strlen')))];
 }
 
 /**
@@ -327,13 +392,13 @@ function dau_cleanup_scan() {
  * $dry = only report what would be removed. 'skipped' = no longer valid (in use, gone); 'failed' = Docker refused.
  * 'size_removed' is the size measured BEFORE removal (images share layers, so the space really freed can be smaller).
  */
-function dau_cleanup_run(array $imageIds, array $containerNames, array $volumeNames = [], $dry = false) {
+function dau_cleanup_run(array $imageIds, array $containerNames, array $volumeNames = [], $dry = false, $cache = false) {
   $scan = dau_cleanup_scan();
   if (!$scan['ok']) return $scan;
   $okImg = []; foreach ($scan['images'] as $i) $okImg[$i['id']] = $i;
   $okCon = []; foreach ($scan['containers'] as $c) $okCon[$c['name']] = $c;
   $okVol = []; foreach ($scan['volumes'] ?? [] as $v) $okVol[$v['name']] = $v;
-  $out = ['ok' => true, 'dry' => (bool)$dry, 'removed' => [], 'failed' => [], 'skipped' => [], 'would' => [], 'freed' => 0, 'size_removed' => 0];
+  $out = ['ok' => true, 'dry' => (bool)$dry, 'removed' => [], 'failed' => [], 'skipped' => [], 'would' => [], 'kept' => [], 'freed' => 0, 'size_removed' => 0];
   $do = function ($label, $size, callable $rm) use (&$out, $dry) {
     if ($dry) { $out['would'][] = $label; $out['size_removed'] += $size; return; }
     $r = $rm();
@@ -351,7 +416,17 @@ function dau_cleanup_run(array $imageIds, array $containerNames, array $volumeNa
     if (!isset($okImg[$id])) { $out['skipped'][] = ['what' => dau_short_id($id), 'why' => 'now in use or already removed']; continue; }
     $label = $okImg[$id]['tags'] ? implode(', ', $okImg[$id]['tags']) : $okImg[$id]['short'];
     $refs = count($okImg[$id]['tags']) > 1 ? $okImg[$id]['tags'] : [$id];      // Docker refuses an id that has several names, unless forced: each name goes, and the last one takes the image
-    $do('image ' . $label, $okImg[$id]['size'], function () use ($refs) { return dau_docker(array_merge(['image', 'rm'], $refs), 120); });
+    $keep = !$dry && dau_image_keep_wanted($okImg[$id]);
+    if ($keep) { $k = dau_image_keep($okImg[$id]); if (!$k['ok']) { $out['failed'][] = ['what' => 'image ' . $label, 'why' => 'a copy could not be kept, so it was not removed: ' . $k['error']]; continue; } $out['kept'][] = $label; }
+    $do('image ' . $label . ($dry && dau_image_keep_wanted($okImg[$id]) ? ' (a copy is kept in quarantine)' : ''), $okImg[$id]['size'], function () use ($refs) { return dau_docker(array_merge(['image', 'rm'], $refs), 120); });
+  }
+  if ($cache) {      // unused build cache only: a cache record in use by a running build stays
+    if ($dry) $out['would'][] = 'Docker build cache (only what nothing uses)';
+    else {
+      $r = dau_docker(['builder', 'prune', '-f'], 900);
+      if ($r['code'] === 0) { $sz = preg_match('/Total(?: reclaimed space)?:\s*([\d.]+\s*[kKMGTP]?B)/', $r['out'], $m) ? dau_docker_bytes($m[1]) : 0; $out['removed'][] = 'Docker build cache'; $out['size_removed'] += $sz; }
+      else $out['failed'][] = ['what' => 'Docker build cache', 'why' => dau_clip(dau_redact(trim($r['err'])), 150) ?: 'Docker refused'];
+    }
   }
   $out['freed'] = $out['size_removed'];           // kept for older callers; it is a measured-before size, not space read back from the disk
   $out['freed_text'] = dau_bytes_text($out['size_removed']);
