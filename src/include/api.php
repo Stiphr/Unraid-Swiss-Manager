@@ -10,7 +10,7 @@ function out($d, $code = 200) { http_response_code($code); echo json_encode($d, 
 function fail($m, $code = 400) { out(['error' => $m], $code); }
 
 $action = (string)($_POST['action'] ?? $_GET['action'] ?? '');
-$READ = ['overview', 'docker', 'plugins', 'os', 'history', 'log', 'status', 'export', 'preview', 'notes', 'cleanup_scan', 'widget', 'appdata_scan', 'quarantine_list', 'tpl_scan', 'appdata_peek', 'channel_check', 'sched_preview'];
+$READ = ['overview', 'docker', 'plugins', 'os', 'history', 'log', 'status', 'export', 'preview', 'notes', 'cleanup_scan', 'widget', 'appdata_scan', 'quarantine_list', 'tpl_scan', 'appdata_peek', 'volume_peek', 'container_logs', 'channel_check', 'sched_preview'];
 if (!in_array($action, $READ, true)) {
   if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') fail('This action requires POST.', 405);
   /* The CSRF token is checked (and then removed from $_POST) by Unraid's own auto-prepended local_prepend.php for every POST,
@@ -141,6 +141,8 @@ switch ($action) {
   case 'tpl_scan': { out(dau_tpl_scan()); }
   case 'channel_check': { out(['ok' => true, 'current' => dau_channel_current(), 'versions' => dau_channel_versions(), 'installed' => DAU_VERSION]); }
   case 'appdata_peek': { out(dau_appdata_peek((string)($_POST['id'] ?? $_GET['id'] ?? ''))); }
+  case 'volume_peek': { out(dau_volume_peek((string)($_POST['name'] ?? $_GET['name'] ?? ''))); }
+  case 'container_logs': { out(dau_container_logs((string)($_POST['name'] ?? $_GET['name'] ?? ''))); }
   case 'history': { out(['rows' => array_slice(dau_history_load(), 0, 200)]); }
   case 'log': { out(['log' => dau_log_tail(300)]); }
   case 'status': {
@@ -330,10 +332,11 @@ switch ($action) {
     $imgs = $json('images') ?? []; $cons = $json('containers') ?? []; $vols = array_values(array_filter($json('volumes') ?? [], 'dau_valid_name'));
     $imgs = array_values(array_filter($imgs, function ($i) { return is_string($i) && preg_match('/^sha256:[0-9a-f]{64}$/', $i); }));
     $cons = array_values(array_filter($cons, 'dau_valid_name'));
-    if (!$imgs && !$cons && !$vols) fail('Nothing selected');
+    $cache = ($_POST['cache'] ?? '') === '1';
+    if (!$imgs && !$cons && !$vols && !$cache) fail('Nothing selected');
     $dry = ($_POST['dry'] ?? '') === '1';
     $lock = dau_lock_try(); if (!$lock) fail('Another job is running.', 409);
-    try { $r = dau_cleanup_run($imgs, $cons, $vols, $dry); } finally { dau_lock_release($lock); }
+    try { $r = dau_cleanup_run($imgs, $cons, $vols, $dry, $cache); } finally { dau_lock_release($lock); }
     if (!$dry) dau_log('info', 'cleanup', '-', 'remove', empty($r['failed']) ? 'ok' : 'partial', count($r['removed'] ?? []) . ' removed, ' . ($r['freed_text'] ?? '0'));
     if (!$dry && !empty($r['removed'])) api_clean_hist(count($r['removed']) . ' image / container / volume item(s) removed', 'cleaned', 'Freed about ' . ($r['freed_text'] ?? ''));
     out($r);
@@ -343,8 +346,8 @@ switch ($action) {
     /* one scan of everything: Docker images / containers / volumes and appdata; the counts are stored for the tab badge */
     $lock = dau_lock_try(); if (!$lock) fail('Another job is running.', 409);
     try {
-      $a = dau_appdata_scan(); $d = dau_cleanup_scan(); $st = dau_state_load();
-      $prev = $st['cleanup']; $st['cleanup'] = dau_cleanup_summary($a, $d); $st['cleanup']['reported'] = $prev['reported'] ?? ''; $st['cleanup']['reported_at'] = (int)($prev['reported_at'] ?? 0);
+      $a = dau_appdata_scan(); $d = dau_cleanup_scan(true); $st = dau_state_load();
+      $prev = $st['cleanup']; $st['cleanup'] = dau_cleanup_summary($a, $d); $st['cleanup']['reported'] = $prev['reported'] ?? ''; $st['cleanup']['reported_at'] = (int)($prev['reported_at'] ?? 0); $st['cleanup']['auto_at'] = (int)($prev['auto_at'] ?? 0);
       dau_state_save($st);
     } finally { dau_lock_release($lock); }
     out(['appdata' => $a, 'docker' => $d, 'summary' => $st['cleanup']]);
