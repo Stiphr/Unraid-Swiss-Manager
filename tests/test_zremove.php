@@ -89,7 +89,7 @@ t('remove: the job records history, keeps going after a refusal and notifies onl
 });
 
 t('remove: api needs POST, a confirmation and valid names; it never passes this plugin or Unraid on', function () {
-  dau_write_json(DAU_PROGRESS, ['queued' => true, 'ts' => dau_now() + 999999]);     // a job "is running": a request that passes every check stops at the spawn, nothing starts
+  dau_write_json(DAU_PROGRESS, ['queued' => true, 'ts' => max(dau_now(), time()) + 999999]);     // a job "is running" (the API runs on the real clock, not the test clock): a request that passes every check stops at the spawn, nothing starts
   has(api_call('run', ['what' => 'remove_docker', 'names' => json_encode(['a'])])['error'] ?? '', 'confirmation');
   has(api_call('run', ['what' => 'remove_docker', 'names' => json_encode(['a'])], 'GET')['error'] ?? '', 'POST');
   has(api_call('run', ['what' => 'remove_docker', 'confirm' => '1', 'names' => json_encode(['../x'])])['error'] ?? '', 'Invalid');
