@@ -79,7 +79,7 @@ function dau_defaults() {
     /* notifications are held back during quiet hours and sent afterwards; failures and reboot notices can still come through */
     'quiet' => ['enabled' => false, 'days' => [0, 1, 2, 3, 4, 5, 6], 'start' => '23:00', 'end' => '07:00', 'urgent' => true],
     /* appdata cleanup: folders to look in, and Safe mode = unused folders are moved to a hidden quarantine folder instead of being deleted */
-    'appdata' => ['roots' => ['/mnt/user/appdata'], 'safe_mode' => true, 'ignore' => [], 'purge_days' => 0, 'report' => false],
+    'appdata' => ['roots' => ['/mnt/user/appdata'], 'safe_mode' => true, 'ignore' => [], 'purge_days' => 0, 'report' => false, 'auto_clean' => false, 'keep_images' => false],
     /* scheduled backups of appdata and of the boot drive: see backups.php */
     'backups' => dau_bk_defaults(),
     'ui' => ['theme' => 'auto', 'accent' => '#f15a2c', 'css' => '', 'widget' => true, 'menu_tab' => true],
@@ -237,7 +237,7 @@ function dau_sanitize_config(array $in, array $cur) {
     $cur['notify_unraid'] = dau_apply_spec($cur['notify_unraid'], $in['notify_unraid'], ['docker' => ['bool'], 'plugins' => ['bool'], 'os' => ['bool']]);
   }
   if (isset($in['quiet']) && is_array($in['quiet'])) $cur['quiet'] = dau_apply_spec($cur['quiet'], $in['quiet'], dau_window_spec() + ['urgent' => ['bool']]);
-  if (isset($in['appdata']) && is_array($in['appdata'])) $cur['appdata'] = dau_apply_spec($cur['appdata'], $in['appdata'], ['roots' => ['paths'], 'safe_mode' => ['bool'], 'ignore' => ['folders'], 'purge_days' => ['int', 0, 365], 'report' => ['bool']]);
+  if (isset($in['appdata']) && is_array($in['appdata'])) $cur['appdata'] = dau_apply_spec($cur['appdata'], $in['appdata'], ['roots' => ['paths'], 'safe_mode' => ['bool'], 'ignore' => ['folders'], 'purge_days' => ['int', 0, 365], 'report' => ['bool'], 'auto_clean' => ['bool'], 'keep_images' => ['bool']]);
   if (isset($in['backups']) && is_array($in['backups'])) $cur['backups'] = dau_apply_spec($cur['backups'], $in['backups'], dau_bk_spec());
   if (isset($in['ui']) && is_array($in['ui'])) $cur['ui'] = dau_apply_spec($cur['ui'], $in['ui'], ['theme' => ['enum', ['auto', 'dark', 'light', 'midnight']], 'accent' => ['color'], 'css' => ['css'], 'widget' => ['bool'], 'menu_tab' => ['bool']]);
   if (isset($in['history']) && is_array($in['history'])) $cur['history'] = dau_apply_spec($cur['history'], $in['history'], ['max_entries' => ['int', 20, 1000]]);

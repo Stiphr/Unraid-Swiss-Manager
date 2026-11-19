@@ -241,6 +241,9 @@ t('ui: smart cleanup never deletes a folder in safe mode and always goes through
   has($js, "if (it.status === 'eligible') S.cs[c][it.key] = true;", 'Select Safe takes only items marked Safe');
   has($js, "var full = s.vol.filter(function (o) { return !o.raw.empty; });", 'a volume with data still needs the "cannot be undone" tick');
   has($js, "if (!S.cscan && !S.cauto && !busy) { S.cauto = true; setTimeout(scanAll, 0); }", 'the tab scans by itself once, never during a job');
+  has($js, "if (it.group && groups[it.group].length >= 3)", 'three or more of a kind fold into one row');
+  has($js, "cache: s.bc.length ? '1' : ''", 'the build cache is cleaned only when selected');
+  has($js, "'appdata.auto_clean'"); has($js, "'appdata.keep_images'");
 });
 
 t('os: the check uses Unraid\'s own checker, which skips its notification, and keeps its release notes link', function () {
