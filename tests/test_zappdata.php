@@ -161,7 +161,55 @@ t('cleanup: every item carries a status and a plain-language reason; in-use item
   eq($by['old-app']['status'], 'eligible'); eq($by['tpl-only']['status'], 'review', 'changed yesterday'); eq($by['nested']['status'], 'review', 'a template points here'); has($by['nested']['reason'], 'saved template');
   eq($s['protected'][0]['status'], 'protected'); ok($s['protected'][0]['reason'] !== ''); eq($s['in_use_rows'], [['name' => 'plex', 'by' => ['plex']]]);
   foreach ($by as $o) ok($o['reason'] !== '' && in_array($o['status'], ['eligible', 'review'], true));
-  $d = dau_cleanup_scan(); foreach ($d['volumes'] as $v) eq($v['status'], 'review', 'volumes are never pre-approved'); ok(isset($d['in_use_images']));
+  $d = dau_cleanup_scan(); foreach ($d['volumes'] as $v) eq($v['status'], 'review', 'a volume that is not provably empty is never pre-approved'); ok(isset($d['in_use_images']));
+});
+
+t('cleanup: older copies of an image are Safe, the newest copy and the rollback image are not', function () {
+  $id = function ($c) { return 'sha256:' . str_repeat($c, 64); };
+  $GLOBALS['IMGS'] = [
+    [$id('1'), 'app', 'v1', '2026-01-01T10:00:00.123456789+05:30'], [$id('2'), 'app', 'v2', '2026-02-01T10:00:00Z'], [$id('3'), 'app', 'v3', '2026-03-01T10:00:00Z'],
+    [$id('4'), '<none>', '<none>', '2025-01-01T00:00:00Z'], [$id('5'), 'reg.lan:5000/tool', '1', '2025-01-01T00:00:00Z'], [$id('6'), 'reg.lan:5000/tool', '2', ''],
+    [$id('7'), 'solo', 'latest', '2024-01-01T00:00:00Z'], [$id('8'), 'base', 'old', '2024-01-01T00:00:00Z'], [$id('9'), 'base', 'new', '2025-01-01T00:00:00Z'],
+  ];
+  mock_exec(function ($a) {
+    $j = implode(' ', $a);
+    if ($a[1] === 'ps') return ['out' => ''];
+    if (strpos($j, 'image ls') !== false) return ['out' => implode("\n", array_map(function ($i) { return "$i[0]|$i[1]|$i[2]|a while ago"; }, $GLOBALS['IMGS'])) . "\n"];
+    if (strpos($j, 'image inspect') !== false) return ['out' => implode("\n", array_map(function ($i) { return trim("$i[0] 100 $i[3]"); }, $GLOBALS['IMGS'])) . "\n"];
+    if (strpos($j, 'volume ls') !== false) return ['out' => ''];
+    return null;
+  });
+  $st = dau_state_load(); $st['docker']['rollback']['base'] = ['prev_id' => $id('8'), 'ref' => 'base@sha256:x', 'at' => 1]; dau_state_save($st);
+  $s = dau_cleanup_scan(); $by = []; foreach ($s['images'] as $i) $by[$i['id']] = $i;
+  eq($by[$id('1')]['status'], 'eligible', 'an older copy'); eq($by[$id('2')]['status'], 'eligible'); ok(!empty($by[$id('1')]['older'])); has($by[$id('1')]['reason'], 'app:v3 is kept for a rollback');
+  eq($by[$id('3')]['status'], 'review', 'the newest copy stays'); has($by[$id('3')]['reason'], 'newest of 3 unused copies of app');
+  eq($by[$id('4')]['status'], 'eligible', 'a nameless image');
+  eq($by[$id('5')]['status'], 'review', 'a copy without a date makes the repository unsure'); eq($by[$id('6')]['status'], 'review');
+  eq($by[$id('7')]['status'], 'review', 'the only copy of an app');
+  eq($by[$id('8')]['status'], 'review', 'the Rollback button needs it'); has($by[$id('8')]['reason'], 'Rollback button of base'); eq($by[$id('9')]['status'], 'review');
+  eq(dau_image_repo('reg.lan:5000/tool:2'), 'reg.lan:5000/tool'); eq(dau_image_repo('reg.lan:5000/tool'), 'reg.lan:5000/tool'); eq(dau_image_repo('lscr.io/x/app:1.2'), 'lscr.io/x/app');
+  $sum = dau_cleanup_summary(['ok' => false], $s); eq($sum['safe'], ['n' => 3, 'size' => 300], 'the summary counts what Smart cleanup (safe) takes');
+});
+
+t('cleanup: an empty folder and an empty volume are Safe; a size of 0 alone is not enough', function () {
+  $root = adenv([]); @mkdir("$root/fresh-empty"); touch("$root/fresh-empty", dau_now());
+  $s = dau_appdata_scan(); $by = []; foreach ($s['orphans'] as $o) $by[$o['name']] = $o;
+  eq($by['fresh-empty']['status'], 'eligible', 'changed today, but empty'); ok($by['fresh-empty']['empty']); has($by['fresh-empty']['reason'], 'it is empty');
+  ok(!$by['tpl-only']['empty']); ok(!dau_dir_empty("$root/plain-file.txt") && !dau_dir_empty("$root/nope") && !dau_dir_empty("$root/linked"));
+  $vroot = '/var/lib/docker/volumes';      // the bootstrap's own /var/lib/docker: tests run only in a throwaway container
+  @mkdir("$vroot/dau-test-empty/_data", 0755, true); @mkdir("$vroot/dau-test-full/_data", 0755, true); file_put_contents("$vroot/dau-test-full/_data/x", '');
+  mock_exec(function ($a) use ($vroot) {
+    $j = implode(' ', $a);
+    if (basename($a[0]) === 'du') return ['out' => "0\t" . end($a) . "\n"];      // du says 0 for both: only the empty one may be Safe
+    if ($a[1] === 'ps') return ['out' => ''];
+    if (strpos($j, 'volume ls') !== false) return ['out' => "dau-test-empty\ndau-test-full\ndau-test-gone\n"];
+    if (strpos($j, 'volume inspect') !== false) return ['out' => json_encode([['Name' => 'dau-test-empty', 'Mountpoint' => "$vroot/dau-test-empty/_data"], ['Name' => 'dau-test-full', 'Mountpoint' => "$vroot/dau-test-full/_data"], ['Name' => 'dau-test-gone', 'Mountpoint' => "$vroot/dau-test-gone/_data"]])];
+    return ['out' => ''];
+  });
+  $d = dau_cleanup_scan(); $v = []; foreach ($d['volumes'] as $x) $v[$x['name']] = $x;
+  eq($v['dau-test-empty']['status'], 'eligible'); ok($v['dau-test-empty']['empty']);
+  eq($v['dau-test-full']['status'], 'review', 'an empty file is still content'); eq($v['dau-test-gone']['status'], 'review', 'a missing folder is not proof of emptiness');
+  foreach (['dau-test-empty', 'dau-test-full'] as $n) dau_test_rm("$vroot/$n");
 });
 
 t('cleanup: a dry run of the Docker cleanup changes nothing and reports sizes', function () {

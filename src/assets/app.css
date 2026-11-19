@@ -187,15 +187,14 @@
 .dau details.csec>summary::before{content:'\25B8';margin-right:8px;color:var(--muted)}.dau details.csec[open]>summary::before{content:'\25BE'}
 .dau details.csec>summary b{flex:1}.dau details.csec .cbody{padding:0 16px 14px}
 .dau .big{font-size:30px;font-weight:700;line-height:1.2}.dau .rules{margin:6px 0 10px;flex-wrap:wrap}
-.dau .ccats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:12px 0}
-.dau .ccat{border:1px solid var(--line);border-radius:var(--r);padding:12px 13px;display:flex;flex-direction:column;gap:4px;background:var(--panel)}
-.dau .ccat h4{margin:0;font-size:13px;font-weight:600}.dau .ccat .cn{font-size:24px;font-weight:600}.dau .ccat .cdesc{flex:1}
+.dau .chero{display:flex;flex-wrap:wrap;gap:14px 20px;align-items:center}.dau .chero>.grow{flex:1;min-width:220px}
+.dau .chero-acts{display:flex;gap:8px;flex-wrap:wrap}.dau .chero-note{flex-basis:100%;margin:0;padding-top:12px;border-top:1px solid var(--line)}
+.dau .seg{display:inline-flex}.dau .seg .btn{border-radius:0;margin-left:-1px}.dau .seg .btn:first-child{border-radius:var(--r) 0 0 var(--r);margin-left:0}.dau .seg .btn:last-child{border-radius:0 var(--r) var(--r) 0}
 .dau details.more{margin-top:4px}.dau details.more>summary{cursor:pointer;color:var(--muted);font-size:.85em}
 .dau .cops{margin:0 0 10px;padding-left:18px}.dau .cops li{margin:6px 0}
 .dau .cbar{position:sticky;bottom:0;z-index:5;display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 12px;margin-top:14px;background:var(--panel);border:1px solid var(--line-2);border-radius:var(--r);box-shadow:0 -6px 24px rgba(0,0,0,.18)}
 .dau .cbar .grow{flex:1;min-width:160px}
-.dau .smart{display:flex;gap:12px 16px;align-items:center;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
-.dau th input[type=checkbox]{margin:0}
+.dau th input[type=checkbox]{margin:0}.dau table.ctab td[data-l=Size]{white-space:nowrap}
 
 /* ---------- settings: section navigation ---------- */
 .dau .secnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;position:sticky;top:0;z-index:4;padding:8px 0;background:var(--bg,transparent)}
@@ -243,7 +242,11 @@
   .dau .toasts{left:12px;right:12px;bottom:12px;max-width:none}
   .dau .chart{height:60px;gap:2px}
   .dau pre.log{max-height:320px}
-  .dau .cbar .btn{flex:1 1 45%}
+  .dau .cbar>.btn{flex:1 1 calc(50% - 4px)}.dau .cbar .grow{flex:1 0 auto;min-width:0;white-space:nowrap}.dau .cbar .sel-lbl{display:none}
+  .dau table.ctab tr.row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;padding:6px 4px}
+  .dau table.ctab td{width:auto}.dau table.ctab td[data-l]::before{display:none}
+  .dau table.ctab td:first-child{grid-row:1/span 2;align-self:start;padding-top:8px!important}.dau table.ctab td.name{grid-column:2/4}
+  .dau table.ctab td[data-l=Size]{text-align:right}.dau table.ctab td.acts{grid-column:2/4}.dau table.ctab td.acts:empty{display:none}
   .dau details.csec>summary{flex-wrap:wrap}.dau details.csec .cbody{padding:0 10px 12px}
   .dau .secnav{position:static}
 }
@@ -252,6 +255,6 @@
   .dau .brand{gap:10px}.dau .logo{width:42px;height:42px;border-radius:10px}.dau .dau-name{font-size:19px}
   .dau .cards{gap:8px}.dau .card{padding:10px 12px}.dau .card .v{font-size:20px}
   .dau .tab span.lbl{display:none}.dau .tab i.fa{font-size:15px;width:18px}.dau .tab{padding:10px 10px!important}
-  .dau .ccats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dau .chero-acts .btn{flex:1 1 100%}
 }
 @media (prefers-reduced-motion:reduce){.dau .progress i,.dau .spinner,.dau .chip .dot,.dau .modal{animation:none}}

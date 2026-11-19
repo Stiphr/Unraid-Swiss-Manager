@@ -66,6 +66,14 @@ function dau_dir_size($p) {
   return preg_match('/^(\d+)\s/', $r['out'], $m) ? (int)$m[1] : 0;
 }
 
+/** True only for a real directory that could be read and holds no entry at all. A size of 0 is not enough: du also says 0 when it fails. */
+function dau_dir_empty($p) {
+  if (!is_dir($p) || is_link($p)) return false;
+  $h = @opendir($p); if (!$h) return false;
+  while (($e = readdir($h)) !== false) if ($e !== '.' && $e !== '..') { closedir($h); return false; }
+  closedir($h); return true;
+}
+
 /**
  * Orphaned appdata folders. A folder is an orphan when no container (any state) maps it or something inside it.
  * Mounts that cover the whole appdata share (e.g. /mnt/user) are shown but never count as ownership.
@@ -108,8 +116,10 @@ function dau_appdata_scan(?array $cfg = null) {
       if ($row['by']) { $busy[] = ['name' => $e, 'by' => $row['by']]; continue; }
       $row['size'] = dau_dir_size($path);
       $row['recent'] = $row['age'] < 30 * 86400;
+      $row['empty'] = dau_dir_empty($path);
       $why = ['No container (running or stopped) uses this folder.']; if ($row['recent']) $why[] = 'It changed in the last 30 days, so something may still write to it.'; if ($row['tpl']) $why[] = 'A saved template (' . implode(', ', $row['tpl']) . ') still points here.';
-      $row['status'] = ($row['recent'] || $row['tpl']) ? 'review' : 'eligible'; $row['reason'] = implode(' ', $why);
+      if ($row['empty']) $why = ['No container (running or stopped) uses this folder, and it is empty.'];     // nothing in it can be lost
+      $row['status'] = ($row['empty'] || (!$row['recent'] && !$row['tpl'])) ? 'eligible' : 'review'; $row['reason'] = implode(' ', $why);
       $orph[] = $row;
     }
   }
@@ -299,14 +309,16 @@ function dau_quarantine_expire(array $cfg) {
  */
 function dau_cleanup_summary($a = null, $d = null) {
   $cfg = dau_load_config(); $z = ['n' => 0, 'size' => 0];
-  $sum = ['at' => dau_now(), 'appdata' => $z, 'images' => $z, 'volumes' => $z, 'containers' => $z, 'quarantine' => count(dau_quarantine_load())];
+  $sum = ['at' => dau_now(), 'appdata' => $z, 'images' => $z, 'volumes' => $z, 'containers' => $z, 'safe' => $z, 'quarantine' => count(dau_quarantine_load())];
+  $safe = function (array $rows) use (&$sum) { foreach ($rows as $r) if (($r['status'] ?? '') === 'eligible') { $sum['safe']['n']++; $sum['safe']['size'] += (int)($r['size'] ?? 0); } };
   $a = $a ?: dau_appdata_scan($cfg);
-  if (!empty($a['ok'])) $sum['appdata'] = ['n' => count($a['orphans']), 'size' => $a['total']];
+  if (!empty($a['ok'])) { $sum['appdata'] = ['n' => count($a['orphans']), 'size' => $a['total']]; $safe($a['orphans']); }
   $d = $d ?: dau_cleanup_scan();
   if (!empty($d['ok'])) {
     $sum['images'] = ['n' => count($d['images']), 'size' => array_sum(array_column($d['images'], 'size'))];
     $sum['containers'] = ['n' => count($d['containers']), 'size' => array_sum(array_column($d['containers'], 'size'))];
     $sum['volumes'] = ['n' => count($d['volumes'] ?? []), 'size' => array_sum(array_column($d['volumes'] ?? [], 'size'))];
+    $safe($d['images']); $safe($d['containers']); $safe($d['volumes'] ?? []);
   }
   return $sum;
 }

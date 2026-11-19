@@ -226,6 +226,34 @@ function dau_bytes_text($b) {
   return round($b / 1024) . ' kB';
 }
 
+/** The repository of an image name: "lscr.io/x/app:1.2" -> "lscr.io/x/app" (a registry port is not a tag). */
+function dau_image_repo($tag) {
+  $p = strrpos($tag, ':');
+  return ($p !== false && strpos(substr($tag, $p), '/') === false) ? substr($tag, 0, $p) : $tag;
+}
+
+/**
+ * Older copies: when one repository has several unused images, the newest stays "review" (it is the copy a rollback would use)
+ * and every older one becomes "eligible". An image with an unknown date is never marked, and never counts as the older one.
+ */
+function dau_mark_older_copies(array &$imgs) {
+  $byRepo = [];
+  foreach ($imgs as $id => $i) foreach ($i['tags'] as $t) $byRepo[dau_image_repo($t)][$id] = (int)($i['ts'] ?? 0);
+  foreach ($imgs as $id => $i) {
+    if ($i['dangling'] || empty($i['ts'])) continue;
+    $kept = [];
+    foreach (array_unique(array_map('dau_image_repo', $i['tags'])) as $repo) {
+      $peers = $byRepo[$repo]; arsort($peers); $top = key($peers);
+      if ($top === $id && count($peers) > 1) $imgs[$id]['reason'] = 'The newest of ' . count($peers) . ' unused copies of ' . $repo . ', kept for a rollback. No container uses it now; check that you do not need it.';
+      if ($top === $id || in_array(0, $peers, true)) { $kept = null; break; }       // this is the newest copy, or a date is missing
+      foreach ($imgs[$top]['tags'] as $t) if (dau_image_repo($t) === $repo) { $kept[] = $t; break; }
+    }
+    if (!$kept) continue;
+    $imgs[$id]['status'] = 'eligible'; $imgs[$id]['older'] = true;
+    $imgs[$id]['reason'] = 'No container uses it, and the newer ' . implode(', ', array_unique($kept)) . ' is kept for a rollback.';
+  }
+}
+
 /**
  * Unused images and leftover containers, with sizes. Nothing is removed here.
  * Images: dangling (no name) or not used by any container. Containers: stopped, not created from an Unraid template, not compose.
@@ -244,8 +272,18 @@ function dau_cleanup_scan() {
     if ($f[1] !== '<none>') { $imgs[$f[0]]['tags'][] = $f[1] . ($f[2] !== '<none>' ? ':' . $f[2] : ''); $imgs[$f[0]]['dangling'] = false; $imgs[$f[0]]['status'] = 'review'; $imgs[$f[0]]['reason'] = 'It was downloaded earlier and no container uses it now. Check that you do not need it; it can be downloaded again.'; }
   }
   if ($imgs) {
-    $r = dau_docker(array_merge(['image', 'inspect', '--format', '{{.Id}} {{.Size}}'], array_keys($imgs)), 60);
-    foreach (preg_split('/\R/', trim($r['out'])) as $line) { $p = explode(' ', trim($line)); if (count($p) === 2 && isset($imgs[$p[0]])) $imgs[$p[0]]['size'] = (int)$p[1]; }
+    $r = dau_docker(array_merge(['image', 'inspect', '--format', '{{.Id}} {{.Size}} {{.Created}}'], array_keys($imgs)), 60);
+    foreach (preg_split('/\R/', trim($r['out'])) as $line) {
+      $p = explode(' ', trim($line)); if (count($p) < 2 || !isset($imgs[$p[0]])) continue;
+      $imgs[$p[0]]['size'] = (int)$p[1];
+      $imgs[$p[0]]['ts'] = isset($p[2]) ? (int)strtotime(preg_replace('/\.\d+/', '', $p[2])) : 0;     // nanoseconds dropped: strtotime cannot read them
+    }
+    dau_mark_older_copies($imgs);
+    /* the image a container's Rollback button would go back to is never picked for you */
+    foreach (dau_state_load()['docker']['rollback'] ?? [] as $cn => $rec) {
+      $pid = (string)($rec['prev_id'] ?? '');
+      if (isset($imgs[$pid])) { $imgs[$pid]['status'] = 'review'; $imgs[$pid]['rollback'] = (string)$cn; $imgs[$pid]['reason'] = 'The Rollback button of ' . $cn . ' goes back to this image. Without it, a rollback has to download it again.'; }
+    }
   }
   $orph = [];
   $names = [];
@@ -272,7 +310,9 @@ function dau_cleanup_scan() {
       if (!in_array($n, $vn, true)) continue;
       $size = ($mp !== '' && strpos($mp, '/var/lib/docker/volumes/') === 0 && strpos($mp, '..') === false) ? dau_dir_size($mp) : 0;
       $an = preg_match('/^[0-9a-f]{64}$/', $n) === 1;
-      $vols[] = ['name' => $n, 'anonymous' => $an, 'size' => $size, 'created' => (string)($v['CreatedAt'] ?? ''), 'status' => 'review', 'reason' => $an ? 'No container uses this unnamed volume. It may hold data of a removed container.' : 'No container uses this named volume. It was created on purpose, so it may hold data you want.'];
+      $empty = $size === 0 && $mp !== '' && strpos($mp, '/var/lib/docker/volumes/') === 0 && strpos($mp, '..') === false && dau_dir_empty($mp);
+      $vols[] = ['name' => $n, 'anonymous' => $an, 'size' => $size, 'empty' => $empty, 'created' => (string)($v['CreatedAt'] ?? ''), 'status' => $empty ? 'eligible' : 'review',
+                 'reason' => $empty ? 'No container uses this volume and it is empty, so removing it loses nothing.' : ($an ? 'No container uses this unnamed volume. It may hold data of a removed container.' : 'No container uses this named volume. It was created on purpose, so it may hold data you want.')];
     }
     usort($vols, function ($a, $b) { return $b['size'] <=> $a['size']; });
   }
