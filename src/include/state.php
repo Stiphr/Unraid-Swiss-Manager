@@ -28,7 +28,7 @@ function dau_state_defaults() {
     'summary' => ['containers' => 0, 'docker_updates' => 0, 'plugin_updates' => 0, 'at' => 0],     // numbers for the dashboard widget (no Docker call needed to show them)
     'queue'   => [],      // notifications held back by quiet hours
     'backups' => ['appdata' => ['at' => 0, 'ok' => null, 'file' => '', 'size' => 0, 'error' => '', 'reason' => '', 'kept' => 0], 'flash' => ['at' => 0, 'ok' => null, 'file' => '', 'size' => 0, 'error' => '', 'reason' => '', 'kept' => 0]],
-    'cleanup' => ['at' => 0, 'appdata' => ['n' => 0, 'size' => 0], 'images' => ['n' => 0, 'size' => 0], 'volumes' => ['n' => 0, 'size' => 0], 'containers' => ['n' => 0, 'size' => 0], 'quarantine' => 0, 'reported' => '', 'reported_at' => 0],   // last cleanup scan: numbers for the tab badge and the report
+    'cleanup' => ['at' => 0, 'appdata' => ['n' => 0, 'size' => 0], 'images' => ['n' => 0, 'size' => 0], 'volumes' => ['n' => 0, 'size' => 0], 'containers' => ['n' => 0, 'size' => 0], 'cache' => ['n' => 0, 'size' => 0], 'safe' => ['n' => 0, 'size' => 0], 'freeable' => null, 'quarantine' => 0, 'auto_at' => 0, 'reported' => '', 'reported_at' => 0],   // last cleanup scan: numbers for the tab badge and the report
     'discord' => ['last_ok' => 0, 'last_attempt' => 0, 'last_error' => '', 'invalid' => false],
   ];
 }
