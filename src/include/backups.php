@@ -154,6 +154,30 @@ function dau_bk_prune($kind, $dest, $keep) {
   return $n;
 }
 
+/** Existing paths the archive leaves out through the user's exclude list (wildcards as tar reads them) and the Cleanup quarantine. */
+function dau_bk_excluded_paths(array $srcs, array $exclude) {
+  $o = [];
+  foreach ($srcs as $s) {
+    $s = rtrim($s, '/');
+    if (is_dir("$s/" . DAU_QDIR_NAME)) $o[] = "$s/" . DAU_QDIR_NAME;
+    foreach ($exclude as $x) foreach (glob("$s/$x", GLOB_NOSORT) ?: [] as $p) $o[] = $p;
+  }
+  return $o;
+}
+
+/** Drops duplicates and paths inside another path of the list, so no size is counted twice. */
+function dau_paths_outermost(array $paths) {
+  $paths = array_values(array_unique(array_map(function ($p) { return rtrim($p, '/'); }, $paths)));
+  usort($paths, function ($a, $b) { return strlen($a) - strlen($b); });
+  $o = [];
+  foreach ($paths as $p) {
+    $inside = false;
+    foreach ($o as $k) if (strpos($p . '/', $k . '/') === 0) { $inside = true; break; }
+    if (!$inside) $o[] = $p;
+  }
+  return $o;
+}
+
 /**
  * Make one backup now.
  * @return array ['ok','error','file','size','pruned','kept','seconds','skipped'=>[...]]
@@ -174,9 +198,9 @@ function dau_bk_run($kind, array $cfg) {
   }
   $skipped = $kind === 'appdata' ? dau_backup_skip($srcs) : [];     // caches, logs and copies the apps rebuild: often the largest part
   $skip = array_keys($skipped);
-  if ($skip) {
-    $cache = dau_du_total($skip); $size = max(0.0, $size - $cache);
-    $res['notes'][] = dau_backup_skip_note($skipped, $cache);
+  if ($skip) $res['notes'][] = dau_backup_skip_note($skipped, dau_du_total(dau_paths_outermost($skip)));
+  if ($kind === 'appdata') {      // count only what goes into the archive: not the Cleanup quarantine or the exclude list either
+    $size = max(0.0, $size - dau_du_total(dau_paths_outermost(array_merge($skip, dau_bk_excluded_paths($srcs, (array)$b['exclude'])))));
   }
   $free = dau_backup_free($dir);
   if ($free !== null && $size > 0 && $size > $free) { $res['error'] = 'Not enough free space at the destination: about ' . dau_bytes_text($size) . ' to back up, ' . dau_bytes_text($free) . ' free. Nothing was changed.'; return $res; }
