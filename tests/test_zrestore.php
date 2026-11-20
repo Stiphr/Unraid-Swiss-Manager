@@ -7,7 +7,7 @@ function rs_docker(array $containers, array $nets) {
   mock_exec(function ($a) {
     $R =& $GLOBALS['RS']; $b = basename($a[0]);
     if ($b === 'tar' || $b === 'rm') { exec(implode(' ', array_map('escapeshellarg', $a)) . ' 2>&1', $o, $code); return ['code' => $code, 'out' => implode("\n", $o), 'err' => $code > 1 ? implode("\n", $o) : '']; }
-    if ($b === 'du') return ['out' => "1000\t" . end($a) . "\n"];
+    if ($b === 'du') return ['out' => ($R['du'][end($a)] ?? 1000) . "\t" . end($a) . "\n"];
     if (isset($a[1]) && basename($a[1]) === 'rebuild_container') { $n = $a[2]; $R['log'][] = "rebuild $n"; $R['c'][$n] = ['running' => true, 'net' => 'bridge', 'image' => "img/$n"]; return ['code' => 0]; }
     if ($b !== 'docker') return null;
         if ($a[1] === 'ps') return ['out' => implode("\n", array_keys($R['c'])) . "\n"];
@@ -55,6 +55,17 @@ t('restore: an appdata backup carries a restore kit (templates, containers, auto
   ok(in_array(DAU_RS_KIT_IN_TAR, $list, true), 'the kit is inside the archive too'); ok(in_array(DAU_RS_TPL_IN_TAR . '/my-app.xml', $list, true), 'templates are inside the archive');
   ok(!array_filter($list, function ($l) { return strpos($l, 'big-copies') !== false; }), 'the excluded folder is not');
   eq(array_column(dau_rs_order($kit), 'name'), ['vpn', 'torrent', 'app'], 'autostart order, and a container using another one\'s network after it');
+});
+
+t('restore: the space a restore needs counts only what is in the archive (not the quarantine or the exclude list)', function () {
+  $cfg = rs_env(); $root = '/mnt/dau-test/appdata';
+  @mkdir("$root/" . DAU_QDIR_NAME . '/old__x', 0755, true);
+  $cfg['backups']['appdata']['exclude'] = ['big-copies', 'big-copies/old.zip', 'no-such-*']; dau_save_config($cfg); $cfg = dau_load_config();
+  $GLOBALS['RS']['du'] = [$root => 10000, "$root/" . DAU_QDIR_NAME => 3000, "$root/big-copies" => 2000, "$root/big-copies/old.zip" => 2000];
+  $r = dau_bk_run('appdata', $cfg); ok($r['ok'], $r['error']);
+  eq((float)dau_rs_kit_of($r['file'])['bytes'], 5000.0, 'the folder minus the quarantine and the excluded folder, each counted once');
+  eq(dau_rs_plan($cfg, basename($r['file']))['need'], 5000.0);
+  eq(dau_paths_outermost(['/a/b/c', '/a/b/', '/a/bc', '/a/b', '/x']), ['/x', '/a/b', '/a/bc']);
 });
 
 t('restore: after the cache drive died everything comes back (folders, templates, network, autostart, containers)', function () {

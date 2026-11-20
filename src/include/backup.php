@@ -194,7 +194,7 @@ function dau_backup_run(array $cfg, $name, array $inspect) {
     if (!$paths) $res['skipped'][] = 'appdata: this container has no host folders under /mnt';
     else {
       $skip = array_keys(dau_backup_skip($paths, false));      // caches, logs and copies the apps rebuild: often the largest part
-      $size = max(0.0, dau_du_total($paths) - dau_du_total($skip));
+      $size = max(0.0, dau_du_total(dau_paths_outermost($paths)) - dau_du_total(dau_paths_outermost($skip)));
       if ($need($size, 'appdata')) {
         $f = "$dir/$stamp-appdata.tar.gz"; $tmp = "$dir/.$stamp-appdata.tar.gz.partial";   // renamed only when complete: an interrupted tar never looks like a backup
         $t = dau_run(array_merge([dau_bin('tar'), '-czf', $tmp], array_map('dau_tar_exclude', $skip), ['--'], $paths), 3600);
