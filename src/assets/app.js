@@ -1043,17 +1043,46 @@
     if (info && info.folder) p.appendChild(h('div', { class: 'muted sm' }, h('span', { class: 'mono' }, info.folder + '/'), info.free != null ? ' · ' + bytes(info.free) + ' free' : ''));
     if (!files.length) p.appendChild(h('p', { class: 'muted' }, info && info.folder ? 'No backup there yet.' : 'Choose a folder to see your backups.'));
     else {
-      var tb = h('table', { class: 'resp' }); tb.appendChild(h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', null, 'File'), h('th', null, 'Size'))));
+      var tb = h('table', { class: 'resp' }); tb.appendChild(h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', null, 'File'), h('th', null, 'Size'), k === 'appdata' ? h('th', null, '') : null)));
       var bd = h('tbody'); tb.appendChild(bd);
-      files.forEach(function (f, i) { bd.appendChild(h('tr', { class: 'row' }, h('td', { 'data-l': 'Date' }, when(f.ts), i === 0 ? h('span', { class: 'badge ok' }, 'Newest') : null), h('td', { 'data-l': 'File', class: 'mono' }, f.name), h('td', { 'data-l': 'Size' }, bytes(f.size)))); });
+      files.forEach(function (f, i) {
+        var rs = k !== 'appdata' ? null : f.restore
+          ? h('button', { class: 'btn sm', disabled: busy, title: busy ? 'Another job is running.' : 'Put this backup back: appdata, Docker templates and containers', onclick: function () { restoreConfirm(f.name); } }, 'Restore…')
+          : h('span', { class: 'muted sm', title: 'Made before 2026.11.20: unpack it by hand (How to restore)' }, 'By hand');
+        bd.appendChild(h('tr', { class: 'row' }, h('td', { 'data-l': 'Date' }, when(f.ts), i === 0 ? h('span', { class: 'badge ok' }, 'Newest') : null), h('td', { 'data-l': 'File', class: 'mono' }, f.name), h('td', { 'data-l': 'Size' }, bytes(f.size)), rs ? h('td', { 'data-l': '' }, rs) : null));
+      });
       p.appendChild(tb);
     }
     var how = h('details', { class: 'more' }, h('summary', null, 'How to restore'));
     how.appendChild(h('p', { class: 'muted sm' }, k === 'flash'
       ? 'Each file is a normal .tar.gz of the boot drive. To restore, prepare a fresh USB drive the usual way, then unpack the backup onto it (for example: tar -xzf flash-DATE.tar.gz -C /tmp/restore, then copy the boot folder contents onto the drive). Restore your licence key and config files from it.'
-      : 'Each file is a normal .tar.gz that keeps the original folder paths. Stop the container first, then unpack, for example: tar -xzf appdata-DATE.tar.gz -C / . To restore only one folder, name it at the end of the command (the paths start without a leading slash). Restoring over a running container can corrupt its data.'));
+      : 'Restore… puts a backup back with one click: it stops the containers, moves the folders that are there now into the quarantine (nothing is overwritten; get them back from the Cleanup tab), unpacks the backup, puts back missing Docker templates, networks and autostart entries, then recreates and starts every container. After a cache drive failure: set up the new drive, start the array and Docker, install this plugin, set the same backup folder, then click Restore…. By hand: each file is a normal .tar.gz that keeps the original folder paths. Stop the container first, then unpack, for example: tar -xzf appdata-DATE.tar.gz -C / . To restore only one folder, name it at the end of the command (the paths start without a leading slash). Restoring over a running container can corrupt its data.'));
     p.appendChild(how);
     return p;
+  }
+  function restoreConfirm(name) {
+    var m = modal('Restore this backup?');
+    m.body.appendChild(loading('Checking what the restore would do'));
+    api('restore_plan', { name: name }).then(function (p) {
+      m.body.innerHTML = '';
+      if (!p.ok) { m.body.appendChild(h('div', { class: 'banner bad' }, p.error || 'This backup cannot be restored.')); return; }
+      var moved = p.folders.filter(function (f) { return f.exists; }).length;
+      var rec = p.containers.filter(function (c) { return c.action === 'recreate'; }), miss = p.containers.filter(function (c) { return c.action === 'missing'; });
+      var nets = p.networks.filter(function (n) { return !n.exists; });
+      m.body.appendChild(h('p', null, 'From ' + when(p.at) + ' (' + bytes(p.size) + ', about ' + bytes(p.need) + ' unpacked' + (p.free != null ? ', ' + bytes(p.free) + ' free' : '') + ').'));
+      var ul = h('ul', { class: 'sm' });
+      ul.appendChild(h('li', null, p.folders.length + ' appdata folders are put back' + (moved ? '; the ' + moved + ' that exist now are moved into the quarantine first (Cleanup tab), nothing is overwritten.' : '.')));
+      ul.appendChild(h('li', null, rec.length ? 'Recreated from their templates (images are downloaded if needed): ' + rec.map(function (c) { return c.name; }).join(', ') + '.' : 'All containers exist; the ones that ran are started again.'));
+      if (p.templates) ul.appendChild(h('li', null, p.templates + ' missing Docker templates are put back.'));
+      if (nets.length) ul.appendChild(h('li', null, 'Docker networks created: ' + nets.map(function (n) { return n.name; }).join(', ') + '.'));
+      if (miss.length) ul.appendChild(h('li', { class: 'warn' }, 'No template, so not recreated: ' + miss.map(function (c) { return c.name; }).join(', ') + '.'));
+      m.body.appendChild(ul);
+      m.body.appendChild(h('p', { class: 'muted sm' }, 'Containers that use appdata are offline while it runs. Data written since this backup is in the quarantine afterwards.'));
+      var cb = h('input', { type: 'checkbox' }); m.body.appendChild(h('label', { class: 'switch' }, cb, 'I want to put this backup back'));
+      var go = h('button', { class: 'btn pri', disabled: true, onclick: function () { m.close(); runJob('restore', [], 'Restore started', { name: name, confirm: '1' }); } }, 'Restore');
+      cb.onchange = function () { go.disabled = !cb.checked; };
+      m.foot.appendChild(h('button', { class: 'btn', onclick: m.close }, 'Cancel')); m.foot.appendChild(go);
+    });
   }
   function saveBackups() {
     /* only this tab's settings: unfinished edits on the Settings tab stay unfinished */
