@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name    "unraid-swiss-manager">
 <!ENTITY author  "Stiphr">
-<!ENTITY version "2026.11.20">
+<!ENTITY version "2026.11.21">
 <!ENTITY emhttp  "/usr/local/emhttp/plugins/&name;">
 <!ENTITY flash   "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/Stiphr/Unraid-Swiss-Manager/refs/heads/stable/unraid-swiss-manager.plg">
@@ -10,6 +10,8 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" launch="Settings/UnraidSwissManager" min="6.9.0" icon="unraid-swiss-manager.png">
 
 <CHANGES>
+###2026.11.21
+- Fix: the space a restore needs was counted with the Cleanup quarantine and the folders on the "Leave these out" list, though neither is in the backup. On the test server it said 62 GB where the backup unpacks to about 31 GB, so a restore onto a smaller new drive could be refused for no reason. The free-space check before a backup counts the same way now, and nothing is counted twice when an excluded folder holds a cache that is left out anyway.
 ###2026.11.20
 - New: one-click restore. Every appdata backup now also holds your Docker templates and a restore kit (each container with its image, autostart order and network, and your custom Docker networks). Restore… next to a backup stops the containers, moves the folders that are there now into the quarantine (nothing is overwritten; get them back from the Cleanup tab), unpacks the backup, puts back missing templates, networks and autostart entries, then recreates missing containers with Unraid's own routine (downloading their images) and starts the rest. It shows exactly what it will do first. Made for a failed cache drive: new drive, start the array and Docker, install the plugin, set the same backup folder, click Restore…. Backups made before this version are restored by hand as before.
 - Backups leave out the caches of Plex, Emby and Jellyfin: Cache, Codecs, Crash Reports, Diagnostics, Drivers, Logs and Updates of Plex; cache, logs, transcoding-temp and transcodes of Emby and Jellyfin; and a /cache or /transcode folder such a container maps inside the backed-up appdata. The server rebuilds them on its own. Libraries, settings, Metadata and watch history are kept. Applies to the scheduled appdata backup and to the backup before a container update; on the test server this is 1.3 GB less per backup.
@@ -406,7 +408,7 @@ $dau_v = '?v=' . (int)@filemtime('/usr/local/emhttp/plugins/unraid-swiss-manager
 if (!defined('DAU_LIB_LOADED')) {
 define('DAU_LIB_LOADED', 1);
 
-define('DAU_VERSION',   '2026.11.20');   // the one version shown everywhere (date based, e.g. 2026.10.30a; Unraid compares it as a string)
+define('DAU_VERSION',   '2026.11.21');   // the one version shown everywhere (date based, e.g. 2026.10.30a; Unraid compares it as a string)
 define('DAU_NAME',      'Unraid Swiss Manager');
 define('DAU_ROOT',      '/usr/local/emhttp/plugins/unraid-swiss-manager');
 define('DAU_DIR',       '/boot/config/plugins/unraid-swiss-manager');
@@ -723,7 +725,7 @@ foreach (['config', 'schedule', 'state', 'discord', 'backup', 'backups', 'restor
 }
 unset($__m, $__f);
 ]]></INLINE>
-<SHA256>b281ea7db84cc8b0fa21f2d18974d480c60afe7f4f915dfb43f0b3c109289a9c</SHA256>
+<SHA256>9df821491f62b0dfe1295adf14ecf33b4e0f7de4ff5a7b44d70aa75dbbd3a592</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/config.php" Mode="0644">
@@ -2034,7 +2036,7 @@ function dau_backup_run(array $cfg, $name, array $inspect) {
     if (!$paths) $res['skipped'][] = 'appdata: this container has no host folders under /mnt';
     else {
       $skip = array_keys(dau_backup_skip($paths, false));      // caches, logs and copies the apps rebuild: often the largest part
-      $size = max(0.0, dau_du_total($paths) - dau_du_total($skip));
+      $size = max(0.0, dau_du_total(dau_paths_outermost($paths)) - dau_du_total(dau_paths_outermost($skip)));
       if ($need($size, 'appdata')) {
         $f = "$dir/$stamp-appdata.tar.gz"; $tmp = "$dir/.$stamp-appdata.tar.gz.partial";   // renamed only when complete: an interrupted tar never looks like a backup
         $t = dau_run(array_merge([dau_bin('tar'), '-czf', $tmp], array_map('dau_tar_exclude', $skip), ['--'], $paths), 3600);
@@ -2060,7 +2062,7 @@ function dau_backup_prune($dir, $keep) {
   foreach (array_slice($sets, $keep, null, true) as $files) foreach ($files as $f) @unlink($f);
 }
 ]]></INLINE>
-<SHA256>59977c2054d5c254531ab138770b2486a44f5a6c8053b5a189876e95d70796bd</SHA256>
+<SHA256>70e5d4501dd81fd1098eb164c0a530954b2b0b91e1712fbb6cf577a3309145af</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/backups.php" Mode="0644">
@@ -2220,6 +2222,30 @@ function dau_bk_prune($kind, $dest, $keep) {
   return $n;
 }
 
+/** Existing paths the archive leaves out through the user's exclude list (wildcards as tar reads them) and the Cleanup quarantine. */
+function dau_bk_excluded_paths(array $srcs, array $exclude) {
+  $o = [];
+  foreach ($srcs as $s) {
+    $s = rtrim($s, '/');
+    if (is_dir("$s/" . DAU_QDIR_NAME)) $o[] = "$s/" . DAU_QDIR_NAME;
+    foreach ($exclude as $x) foreach (glob("$s/$x", GLOB_NOSORT) ?: [] as $p) $o[] = $p;
+  }
+  return $o;
+}
+
+/** Drops duplicates and paths inside another path of the list, so no size is counted twice. */
+function dau_paths_outermost(array $paths) {
+  $paths = array_values(array_unique(array_map(function ($p) { return rtrim($p, '/'); }, $paths)));
+  usort($paths, function ($a, $b) { return strlen($a) - strlen($b); });
+  $o = [];
+  foreach ($paths as $p) {
+    $inside = false;
+    foreach ($o as $k) if (strpos($p . '/', $k . '/') === 0) { $inside = true; break; }
+    if (!$inside) $o[] = $p;
+  }
+  return $o;
+}
+
 /**
  * Make one backup now.
  * @return array ['ok','error','file','size','pruned','kept','seconds','skipped'=>[...]]
@@ -2240,9 +2266,9 @@ function dau_bk_run($kind, array $cfg) {
   }
   $skipped = $kind === 'appdata' ? dau_backup_skip($srcs) : [];     // caches, logs and copies the apps rebuild: often the largest part
   $skip = array_keys($skipped);
-  if ($skip) {
-    $cache = dau_du_total($skip); $size = max(0.0, $size - $cache);
-    $res['notes'][] = dau_backup_skip_note($skipped, $cache);
+  if ($skip) $res['notes'][] = dau_backup_skip_note($skipped, dau_du_total(dau_paths_outermost($skip)));
+  if ($kind === 'appdata') {      // count only what goes into the archive: not the Cleanup quarantine or the exclude list either
+    $size = max(0.0, $size - dau_du_total(dau_paths_outermost(array_merge($skip, dau_bk_excluded_paths($srcs, (array)$b['exclude'])))));
   }
   $free = dau_backup_free($dir);
   if ($free !== null && $size > 0 && $size > $free) { $res['error'] = 'Not enough free space at the destination: about ' . dau_bytes_text($size) . ' to back up, ' . dau_bytes_text($free) . ' free. Nothing was changed.'; return $res; }
@@ -2356,7 +2382,7 @@ function dau_bk_before_update(array &$J, $what) {
   return true;
 }
 ]]></INLINE>
-<SHA256>b13b4986571442c9dfef562f470734a0d348cf9d9df72bf5504b2f06a4e6606c</SHA256>
+<SHA256>00f8da31f920f9f4b494980de73e90634890be32fc5e155bb120744848cc527d</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/restore.php" Mode="0644">
