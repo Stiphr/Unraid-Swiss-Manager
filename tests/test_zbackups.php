@@ -31,8 +31,9 @@ t('backups: settings are validated (keep 1-3, schedule list, destination under /
   $n = dau_sanitize_config(['backups' => ['appdata' => ['keep' => 9, 'schedule' => 'hourly', 'dest' => '/etc/x', 'time' => '25:00'], 'flash' => ['keep' => 0, 'schedule' => 'monthly', 'monthday' => 40]]], $c);
   eq($n['backups']['appdata']['keep'], 3); eq($n['backups']['appdata']['schedule'], 'off', 'unknown schedule ignored'); eq($n['backups']['appdata']['dest'], '', 'outside /mnt refused'); eq($n['backups']['appdata']['time'], '03:00');
   eq($n['backups']['flash']['keep'], 1); eq($n['backups']['flash']['schedule'], 'monthly'); eq($n['backups']['flash']['monthday'], 28);
-  $n = dau_sanitize_config(['backups' => ['appdata' => ['before_update' => true, 'required' => true, 'exclude' => ['plex-cache', '../etc', 'a/b']]]], $c);
-  ok($n['backups']['appdata']['before_update'] && $n['backups']['appdata']['required']); eq($n['backups']['appdata']['exclude'], ['plex-cache'], 'folder names only');
+  $n = dau_sanitize_config(['backups' => ['appdata' => ['before_update' => true, 'required' => true, 'exclude' => ['plex-cache', '../etc', 'a/b', '/qui/backups/', 'x/../y', '.hidden', 'app/.cache', "a\nb", 'a//b', 'plex-cache', 'logs/*.log']]]], $c);
+  ok($n['backups']['appdata']['before_update'] && $n['backups']['appdata']['required']);
+  eq($n['backups']['appdata']['exclude'], ['plex-cache', 'a/b', 'qui/backups', 'app/.cache', 'logs/*.log'], 'paths inside the appdata folder; never .., a hidden first part, empty parts or control characters');
 });
 
 t('backups: destination checks', function () {
@@ -176,4 +177,126 @@ t('rename: the settings page lives at Settings/UnraidSwissManager, the tile in U
   $plg = file_get_contents(__DIR__ . '/../unraid-swiss-manager.plg');
   has($plg, 'launch="Settings/UnraidSwissManager"'); has($plg, 'Name="&emhttp;/UnraidSwissManager.page"'); has($plg, 'Name="&emhttp;/UnraidSwissManagerDash.page"'); lacks(substr($plg, strpos($plg, '</CHANGES>')), 'UnraidAutoUpdater', 'only the changelog may mention the old name');
   foreach (array_merge(glob(__DIR__ . '/../src/*.page'), glob(__DIR__ . '/../src/include/*.php')) as $f) lacks(file_get_contents($f), 'Settings/UnraidAutoUpdater', basename($f));
+});
+
+/* Plex, Emby and Jellyfin as their images lay them out, plus an app whose own "cache" folder must be kept. */
+function bk_media($root) {
+  $mk = function ($p, $file = null) { @mkdir(dirname($file ?? "$p/x"), 0755, true); @mkdir($p, 0755, true); if ($file) file_put_contents($file, 'x'); };
+  $pms = "$root/plex/Library/Application Support/Plex Media Server";
+  $mk("$pms/Metadata", "$pms/Preferences.xml"); foreach (['Cache/Transcode', 'Codecs', 'Crash Reports', 'Logs', 'Updates'] as $c) $mk("$pms/$c");
+  $mk("$root/plex/Library/Application Support/Plex Media Server/Plug-in Support/Databases");
+  $j = "$root/binhex-jellyfin";   // linuxserver / binhex: one /config folder
+  $mk("$j/config", "$j/config/system.xml"); $mk("$j/data", "$j/data/jellyfin.db"); foreach (['cache', 'log', 'metadata', 'data/transcodes'] as $c) $mk("$j/$c");
+  $o = "$root/jellyfin";          // official image: /config and /cache side by side
+  $mk("$o/config/config", "$o/config/config/system.xml"); $mk("$o/config/data", "$o/config/data/jellyfin.db"); $mk("$o/config/log"); $mk("$o/cache/images"); $mk("$o/config/metadata");
+  $e = "$root/EmbyServer";
+  $mk("$e/config", "$e/config/system.xml"); $mk("$e/data", "$e/data/library.db"); foreach (['cache', 'logs', 'transcoding-temp', 'metadata'] as $c) $mk("$e/$c");
+  $mk("$root/nextcloud/cache"); $mk("$root/nextcloud/config", "$root/nextcloud/config/system.xml");   // looks a bit like Jellyfin, has no database: not a media server
+}
+
+t('backups: the caches of Plex, Emby and Jellyfin are found, their libraries and other apps\' caches are not', function () {
+  bkenv(); $root = '/mnt/dau-test/appdata'; bk_media($root);
+  $d = dau_media_cache_dirs([$root]); sort($d);
+  $pms = "$root/plex/Library/Application Support/Plex Media Server";
+  $want = ["$pms/Cache", "$pms/Codecs", "$pms/Crash Reports", "$pms/Logs", "$pms/Updates",
+    "$root/binhex-jellyfin/cache", "$root/binhex-jellyfin/data/transcodes", "$root/binhex-jellyfin/log",
+    "$root/jellyfin/cache", "$root/jellyfin/config/log",
+    "$root/EmbyServer/cache", "$root/EmbyServer/logs", "$root/EmbyServer/transcoding-temp"];
+  sort($want); eq($d, $want);
+  foreach (["$pms/Metadata", "$pms/Plug-in Support", "$root/binhex-jellyfin/metadata", "$root/EmbyServer/metadata", "$root/nextcloud/cache", "$root/jellyfin/config/metadata"] as $keep) ok(!in_array($keep, $d, true), "kept: $keep");
+  eq(dau_media_cache_dirs(["$root/plex"]), array_values(array_filter($want, function ($p) use ($pms) { return strpos($p, $pms) === 0; })), 'also found when the root is the app folder itself');
+  eq(dau_media_cache_dirs(['/mnt/dau-test/none']), [], 'a missing root finds nothing');
+  eq(dau_tar_exclude('/mnt/a/Plex Media Server/[x]*?'), '--exclude=mnt/a/Plex Media Server/\[x\]\*\?', 'tar wildcards are escaped');
+});
+
+t('backups: the scheduled appdata backup leaves the media caches out and says so', function () {
+  $cfg = bkenv(); bk_media('/mnt/dau-test/appdata');
+  $r = dau_bk_run('appdata', $cfg); ok($r['ok'], $r['error']);
+  $a = implode(' ', $GLOBALS['TARS'][0]);
+  has($a, '--exclude=mnt/dau-test/appdata/plex/Library/Application Support/Plex Media Server/Cache'); has($a, '--exclude=mnt/dau-test/appdata/jellyfin/cache'); has($a, '--exclude=mnt/dau-test/appdata/EmbyServer/transcoding-temp');
+  lacks($a, 'Metadata'); lacks($a, 'nextcloud');
+  ok(strpos($a, '--exclude=mnt/dau-test/appdata/jellyfin/cache') < strpos($a, ' -- '), 'excludes come before the folders');
+  has(implode(' ', $r['notes']), 'Left out, because the apps rebuild them or the backup already holds them: caches of Plex, Emby and Jellyfin (13 items');
+  $cfg = bkenv(); $r = dau_bk_run('appdata', $cfg); ok($r['ok'], $r['error']);
+  lacks(implode(' ', $GLOBALS['TARS'][0]), 'Plex Media Server'); lacks(implode(' ', $r['notes']), 'Left out', 'no media server, no note');
+});
+
+t('backups: the free-space check does not count the caches', function () {
+  $cfg = bkenv(); bk_media('/mnt/dau-test/appdata');
+  $huge = 1e18;     // far more than any disk: only fits when the caches are taken off again
+  mock_exec(function ($a) use ($huge) {
+    $b = basename($a[0]);
+    if ($b === 'du') return ['out' => (end($a) === '/mnt/dau-test/appdata' ? $huge + 4096 : (strpos(end($a), '/Plex Media Server/Cache') !== false ? $huge : 0)) . "\t" . end($a) . "\n"];
+    if ($b === 'tar') { $GLOBALS['TARS'][] = $a; file_put_contents($a[2], 'archive'); return ['code' => 0]; }
+    return null;
+  });
+  $r = dau_bk_run('appdata', $cfg); ok($r['ok'], $r['error']);
+  has(implode(' ', $r['notes']), 'the apps rebuild them');
+  eq(dau_du_total([]), 0.0);
+});
+
+t('docker: the backup before an update leaves the media caches and a /cache or /transcode mount out', function () {
+  @mkdir('/mnt/dau-test-bk4', 0755, true); bkenv(); bk_media('/mnt/dau-test/appdata');
+  $cfg = dau_defaults(); $cfg['global']['backup'] = ['enabled' => true, 'dest' => '/mnt/dau-test-bk4', 'retention' => 2, 'config' => false, 'image' => false, 'appdata' => true, 'required' => false];
+  $inspect = ['Config' => ['Image' => 'jellyfin/jellyfin:latest'], 'Mounts' => [
+    ['Type' => 'bind', 'Source' => '/mnt/dau-test/appdata/jellyfin/config', 'Destination' => '/config'],
+    ['Type' => 'bind', 'Source' => '/mnt/dau-test/appdata/jellyfin/cache', 'Destination' => '/cache']]];
+  $r = dau_backup_run($cfg, 'jellyfin', $inspect); ok($r['ok'], $r['error']);
+  $a = implode(' ', $GLOBALS['TARS'][0]);
+  has($a, '--exclude=mnt/dau-test/appdata/jellyfin/config/log'); lacks($a, '/mnt/dau-test/appdata/jellyfin/cache', 'the /cache mount is not archived');
+  ok(substr($a, -strlen('-- /mnt/dau-test/appdata/jellyfin/config')) === '-- /mnt/dau-test/appdata/jellyfin/config', $a);
+  ok(dau_is_media_cache_mount(['Config' => ['Image' => 'lscr.io/linuxserver/plex@sha256:ab']], ['Destination' => '/transcode/']));
+  ok(!dau_is_media_cache_mount(['Config' => ['Image' => 'redis:7']], ['Destination' => '/cache']), 'other apps keep their /cache');
+  ok(!dau_is_media_cache_mount(['Config' => ['Image' => 'plexinc/pms-docker']], ['Destination' => '/config']));
+  dau_test_rm('/mnt/dau-test-bk4');
+});
+
+t('backups: hotio\'s Plex (the appdata folder is the Plex folder itself) and a transcode folder a media container maps', function () {
+  $cfg = bkenv(); $root = '/mnt/dau-test/appdata';
+  @mkdir("$root/plex/Plug-in Support/Databases", 0755, true); @mkdir("$root/plex/Cache", 0755, true); @mkdir("$root/plex/Metadata", 0755, true); file_put_contents("$root/plex/Preferences.xml", 'x');
+  @mkdir("$root/transcode/Transcode", 0755, true); @mkdir("$root/redis-cache", 0755, true);
+  @mkdir("$root/tool/Plug-in Support", 0755, true); @mkdir("$root/tool/Cache", 0755, true);   // a Plug-in Support folder alone is not Plex
+  eq(dau_media_cache_dirs([$root]), ["$root/plex/Cache"]);
+  mock_exec(function ($a) {
+    $b = basename($a[0]);
+    if ($b === 'docker' && $a[1] === 'ps') return ['out' => "p\nr\n"];
+    if ($b === 'docker' && $a[1] === 'inspect') return ['out' => json_encode([
+      ['Name' => '/plex', 'Config' => ['Image' => 'ghcr.io/hotio/plex:latest'], 'Mounts' => [
+        ['Type' => 'bind', 'Source' => '/mnt/user/dau-test-elsewhere/plex', 'Destination' => '/config'],
+        ['Type' => 'bind', 'Source' => '/mnt/cache/appdata/../../etc', 'Destination' => '/cache'],
+        ['Type' => 'bind', 'Source' => '/mnt/cache/appdata/transcode', 'Destination' => '/transcode']]],
+      ['Name' => '/redis', 'Config' => ['Image' => 'redis:7'], 'Mounts' => [['Type' => 'bind', 'Source' => '/mnt/dau-test/appdata/redis-cache', 'Destination' => '/cache']]]])];
+    if ($b === 'du') return ['out' => "4096\t" . end($a) . "\n"];
+    if ($b === 'tar') { $GLOBALS['TARS'][] = $a; file_put_contents($a[2], 'archive'); return ['code' => 0]; }
+    return null;
+  });
+  eq(dau_media_cache_mounts([$root]), ["$root/transcode"], 'the cache drive path is matched to the share path; other apps\' /cache is not');
+  $r = dau_bk_run('appdata', $cfg); ok($r['ok'], $r['error']);
+  $a = implode(' ', $GLOBALS['TARS'][0]);
+  has($a, '--exclude=mnt/dau-test/appdata/plex/Cache'); has($a, '--exclude=mnt/dau-test/appdata/transcode'); lacks($a, 'redis-cache'); lacks($a, 'tool/Cache');
+});
+
+t('backups: logs, artwork and copies other apps rebuild are left out, their databases and settings are kept', function () {
+  $cfg = bkenv(['appdata' => ['exclude' => ['qui/backups', 'big']]]); $root = '/mnt/dau-test/appdata';
+  $mk = function ($p, $file = null) { @mkdir($p, 0755, true); if ($file !== null) file_put_contents("$p/$file", 'x'); };
+  $mk("$root/sonarr", 'config.xml'); $mk("$root/sonarr", 'sonarr.db'); $mk("$root/sonarr", 'logs.db'); foreach (['MediaCover/1', 'logs', 'Backups/scheduled', 'Sentry'] as $c) $mk("$root/sonarr/$c");
+  $mk("$root/binhex-radarr/config", 'config.xml'); $mk("$root/binhex-radarr/config", 'radarr.db'); $mk("$root/binhex-radarr/config/MediaCover");
+  $mk("$root/other", 'config.xml'); $mk("$root/other/logs"); $mk("$root/other/Backups");   // config.xml alone is not Sonarr
+  $mk("$root/adguard/config", 'AdGuardHome.yaml'); $mk("$root/adguard/workingdir/data", 'querylog.json'); $mk("$root/adguard/workingdir/data", 'querylog.json.1'); $mk("$root/adguard/workingdir/data", 'stats.db');
+  $mk("$root/dns/workingdir/data", 'querylog.json');   // no AdGuardHome.yaml: kept
+  $mk("$root/immich/machine-learning/models/clip"); $mk("$root/immich/upload");
+  $pms = "$root/plex/Library/Application Support/Plex Media Server"; $mk($pms, 'Preferences.xml');
+  $db = "$pms/Plug-in Support/Databases"; $mk($db, 'com.plexapp.plugins.library.db'); $mk($db, 'com.plexapp.plugins.library.db-2025-05-06'); $mk($db, 'com.plexapp.plugins.library.blobs.db-2025-05-03'); $mk($db, 'com.plexapp.plugins.library.db-shm');
+  $mk("$root/qui/backups"); $mk("$root/qui", 'qui.db');
+  $s = dau_app_skip_paths([$root]); $p = array_keys($s); sort($p);
+  $want = ["$root/adguard/workingdir/data/querylog.json", "$root/adguard/workingdir/data/querylog.json.1", "$root/binhex-radarr/config/MediaCover", "$root/immich/machine-learning/models",
+    "$db/com.plexapp.plugins.library.blobs.db-2025-05-03", "$db/com.plexapp.plugins.library.db-2025-05-06",
+    "$root/sonarr/Backups", "$root/sonarr/MediaCover", "$root/sonarr/Sentry", "$root/sonarr/logs", "$root/sonarr/logs.db"];
+  sort($want); eq($p, $want);
+  eq($s["$root/adguard/workingdir/data/querylog.json"], 'the AdGuard query log');
+  $r = dau_bk_run('appdata', $cfg); ok($r['ok'], $r['error']);
+  $a = implode(' ', $GLOBALS['TARS'][0]);
+  has($a, '--exclude=mnt/dau-test/appdata/qui/backups'); has($a, '--exclude=mnt/dau-test/appdata/big'); has($a, '--exclude=mnt/dau-test/appdata/sonarr/MediaCover'); has($a, '--exclude=mnt/dau-test/appdata/immich/machine-learning/models');
+  lacks($a, 'sonarr.db '); lacks($a, 'stats.db'); lacks($a, 'library.db '); lacks($a, 'other/'); lacks($a, 'dns/'); lacks($a, 'immich/upload');
+  $n = implode(' ', $r['notes']); has($n, 'the AdGuard query log'); has($n, 'Immich machine-learning models'); has($n, 'old copies of the Plex database'); has($n, 'artwork, logs and own backups of Sonarr, Radarr and the like');
 });

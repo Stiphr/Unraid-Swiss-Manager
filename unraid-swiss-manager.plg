@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name    "unraid-swiss-manager">
 <!ENTITY author  "Stiphr">
-<!ENTITY version "2026.11.05b1">
+<!ENTITY version "2026.11.20b1">
 <!ENTITY emhttp  "/usr/local/emhttp/plugins/&name;">
 <!ENTITY flash   "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/Stiphr/Unraid-Swiss-Manager/refs/heads/beta/unraid-swiss-manager.plg">
@@ -10,6 +10,13 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="&pluginURL;" launch="Settings/UnraidSwissManager" min="6.9.0" icon="unraid-swiss-manager.png">
 
 <CHANGES>
+###2026.11.20
+- New: one-click restore. Every appdata backup now also holds your Docker templates and a restore kit (each container with its image, autostart order and network, and your custom Docker networks). Restore… next to a backup stops the containers, moves the folders that are there now into the quarantine (nothing is overwritten; get them back from the Cleanup tab), unpacks the backup, puts back missing templates, networks and autostart entries, then recreates missing containers with Unraid's own routine (downloading their images) and starts the rest. It shows exactly what it will do first. Made for a failed cache drive: new drive, start the array and Docker, install the plugin, set the same backup folder, click Restore…. Backups made before this version are restored by hand as before.
+- Backups leave out the caches of Plex, Emby and Jellyfin: Cache, Codecs, Crash Reports, Diagnostics, Drivers, Logs and Updates of Plex; cache, logs, transcoding-temp and transcodes of Emby and Jellyfin; and a /cache or /transcode folder such a container maps inside the backed-up appdata. The server rebuilds them on its own. Libraries, settings, Metadata and watch history are kept. Applies to the scheduled appdata backup and to the backup before a container update; on the test server this is 1.3 GB less per backup.
+- A folder only counts as a media server's when its own files say so (Plex: Preferences.xml with Plug-in Support; Emby and Jellyfin: config/system.xml with their database), so another app's "cache" or "logs" folder is still backed up. Works with the linuxserver, binhex, hotio and official images.
+- Also left out on their own: artwork (MediaCover), logs and own zip backups of Sonarr, Radarr, Lidarr, Prowlarr, Readarr and Whisparr; the AdGuard Home query log (statistics are kept); Immich machine-learning models (downloaded again); Plex's own dated copies of its database. Each app is recognised by its own files. On the test server all of this is 8.7 GB less per appdata backup.
+- "Leave these out" takes folders and files deeper in the appdata folder too (myapp/backups, logs/*.log). Before, anything with a slash was silently dropped.
+- The free-space check before a backup no longer counts what is left out, and the backup result says what was left out and how much.
 ###2026.11.05
 - Smarter Cleanup: older copies of an image are marked Safe when a newer unused copy of the same repository is kept (the newest stays as the rollback copy), and so are empty folders, empty volumes, copies of a folder (app.bak-0.9, app-old, app.v1.2) next to the original, and older versions of a folder whose original is gone. The image a container's Rollback button needs is never marked Safe. On a test server this took Smart cleanup (safe) from 1 item to 282.
 - New: the Docker build cache is listed and can be cleaned (unused cache only); on the test server it was 25 GB.
@@ -399,7 +406,7 @@ $dau_v = '?v=' . (int)@filemtime('/usr/local/emhttp/plugins/unraid-swiss-manager
 if (!defined('DAU_LIB_LOADED')) {
 define('DAU_LIB_LOADED', 1);
 
-define('DAU_VERSION',   '2026.11.05b1');   // the one version shown everywhere (date based, e.g. 2026.10.30a; Unraid compares it as a string)
+define('DAU_VERSION',   '2026.11.20b1');   // the one version shown everywhere (date based, e.g. 2026.10.30a; Unraid compares it as a string)
 define('DAU_NAME',      'Unraid Swiss Manager');
 define('DAU_ROOT',      '/usr/local/emhttp/plugins/unraid-swiss-manager');
 define('DAU_DIR',       '/boot/config/plugins/unraid-swiss-manager');
@@ -710,13 +717,13 @@ function dau_valid_plg($n) { return is_string($n) && preg_match('/^[A-Za-z0-9][A
 
 } // DAU_LIB_LOADED
 
-foreach (['config', 'schedule', 'state', 'discord', 'backup', 'backups', 'docker', 'plugins', 'os', 'workflow', 'extras', 'appdata', 'remove', 'jobs'] as $__m) {
+foreach (['config', 'schedule', 'state', 'discord', 'backup', 'backups', 'restore', 'docker', 'plugins', 'os', 'workflow', 'extras', 'appdata', 'remove', 'jobs'] as $__m) {
   $__f = __DIR__ . '/' . $__m . '.php';
   if (is_file($__f)) require_once $__f;
 }
 unset($__m, $__f);
 ]]></INLINE>
-<SHA256>d4f348f95af1efc754975576c11fbf7a2b63b54e6901cbc1bcc9400911baca43</SHA256>
+<SHA256>45daf540b9d41b5d6620734edef1b1da6dd6ae4e9b30f738ba80bb682fb58ee0</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/config.php" Mode="0644">
@@ -854,6 +861,17 @@ function dau_clean_value($spec, $v, $cur) {
       if (!is_array($v)) return $cur;
       $o = [];
       foreach ($v as $n) if (is_string($n) && preg_match('#^[^/\x00-\x1F\x7F.][^/\x00-\x1F\x7F]{0,254}$#', $n) && !in_array($n, $o, true) && count($o) < 100) $o[] = $n;
+      return $o;
+    case 'subpaths':   // folder or file inside a root: "plex", "qui/backups"; no "..", no leading slash, no hidden first part
+      if (!is_array($v)) return $cur;
+      $o = [];
+      foreach ($v as $n) {
+        if (!is_string($n)) continue;
+        $n = trim(trim($n), '/'); $parts = explode('/', $n);
+        $okp = $n !== '' && strlen($n) <= 1000 && $parts[0][0] !== '.' && !preg_match('#[\x00-\x1F\x7F]#', $n);
+        foreach ($parts as $q) if ($q === '' || $q === '.' || $q === '..' || strlen($q) > 255) $okp = false;
+        if ($okp && !in_array($n, $o, true) && count($o) < 100) $o[] = $n;
+      }
       return $o;
     case 'names':
       if (!is_array($v)) return $cur;
@@ -1100,7 +1118,7 @@ function dau_export_config() {
   return ['exported_at' => dau_ts_iso(dau_now()), 'plugin_version' => DAU_VERSION, 'secrets_included' => false, 'config' => $cfg];
 }
 ]]></INLINE>
-<SHA256>d1c206ee4db8ebefafc3ae891e86fbae0752f2fa8a5b893300216264b6b524a4</SHA256>
+<SHA256>c81c1ee3d961cb5d7bf5651d6b0953045135fb8cb93d37a98a3059c6b58ff8cb</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/schedule.php" Mode="0644">
@@ -1642,6 +1660,8 @@ function dau_discord_event_embed(array $ev, $server) {
     'os_verified'     => ['✅', 'OS update verified after reboot', 0x2ECC71],
     'os_unverified'   => ['❌', 'OS update not active after reboot', 0xE74C3C],
     'backup_done'     => ['💾', 'Backup completed', 0x2ECC71],
+    'restore_done'    => ['♻️', 'Restore completed', 0x2ECC71],
+    'restore_failed'  => ['🛑', 'Restore FAILED', 0xE74C3C],
     'backup_failed'   => ['❌', 'Backup FAILED', 0xE74C3C],
     'cleanup_report'  => ['🧹', 'Cleanup: things you can free', 0x3498DB],
     'cleanup_auto'    => ['🧹', 'Cleanup: Smart cleanup (safe) done', 0x2ECC71],
@@ -1814,7 +1834,7 @@ function dau_discord_test(array &$st, $urlOverride = null) {
   return ['ok' => false, 'error' => $r['error']];
 }
 ]]></INLINE>
-<SHA256>ae52dc31f079befdffce014bdecf05335f2504cd961ffa0cd4d5ea6d9289b6a8</SHA256>
+<SHA256>f5dff94ff964b48cee43e89b1144abe244966f236fe4a767d778baebb02eed4e</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/backup.php" Mode="0644">
@@ -1832,6 +1852,141 @@ function dau_discord_test(array &$st, $urlOverride = null) {
 function dau_backup_dir_for($dest, $name) { return rtrim($dest, '/') . '/' . $name; }
 
 function dau_backup_free($dest) { $f = @disk_free_space($dest); return $f === false ? null : (float)$f; }
+
+/**
+ * Cache folders of Plex, Emby and Jellyfin inside $roots: the folders themselves, their children and grandchildren
+ * are looked at, so appdata/plex, appdata/binhex-jellyfin and appdata/jellyfin/config are all found. Everything
+ * listed is rebuilt by the server on its own (thumbnails it has to redo come from Cache, not from Metadata, which
+ * holds posters and edits and is kept). A folder only counts as a media server's when its own files say so,
+ * because "cache" and "logs" are common names:
+ *   Plex             Preferences.xml and Plug-in Support in <dir>/Library/Application Support/Plex Media Server,
+ *                    <dir>/Plex Media Server or <dir> itself
+ *   Emby / Jellyfin  <dir>/config/system.xml and <dir>/data/library.db or <dir>/data/jellyfin.db
+ * @return string[] existing folders, absolute, without a trailing slash
+ */
+function dau_media_cache_dirs(array $roots) {
+  $plex = ['Cache', 'Codecs', 'Crash Reports', 'Diagnostics', 'Drivers', 'Logs', 'Updates'];
+  $emby = ['cache', 'logs', 'log', 'transcoding-temp', 'transcodes', 'data/transcodes'];
+  $out = [];
+  $kids = function ($d) {
+    $r = [];
+    foreach (@scandir($d) ?: [] as $n) if ($n !== '.' && $n !== '..' && $n !== DAU_QDIR_NAME && is_dir("$d/$n") && !is_link("$d/$n")) $r[] = "$d/$n";
+    return $r;
+  };
+  foreach ($roots as $root) {
+    $root = rtrim((string)$root, '/');
+    if ($root === '' || !is_dir($root)) continue;
+    $cands = [$root];
+    foreach ($kids($root) as $k) { $cands[] = $k; foreach ($kids($k) as $g) $cands[] = $g; }
+    foreach ($cands as $d) {
+      foreach (["$d/Library/Application Support/Plex Media Server", "$d/Plex Media Server", $d] as $pms)    // the last one: hotio's image, where /config is the Plex folder itself
+        if (is_file("$pms/Preferences.xml") && is_dir("$pms/Plug-in Support")) foreach ($plex as $c) $out[] = "$pms/$c";
+      if (is_file("$d/config/system.xml") && (is_file("$d/data/library.db") || is_file("$d/data/jellyfin.db"))) {
+        foreach ($emby as $c) $out[] = "$d/$c";
+        if (basename($d) === 'config') { $out[] = dirname($d) . '/cache'; $out[] = dirname($d) . '/transcodes'; }   // official Jellyfin image: /config and /cache side by side
+      }
+    }
+  }
+  return array_values(array_unique(array_filter($out, function ($p) { return is_dir($p) && !is_link($p); })));
+}
+
+/**
+ * Other files apps rebuild or that only copy what the backup already holds, found the same way (the app's own files
+ * must say which app it is): path => what it is.
+ *   Sonarr, Radarr, Lidarr, Prowlarr, Readarr, Whisparr (config.xml + <app>.db): MediaCover (artwork, downloaded again),
+ *     logs, logs.db, Sentry, and Backups (the app's own zip copies of the database the backup already holds)
+ *   AdGuard Home (AdGuardHome.yaml): the query log, querylog.json and its rotated copy (statistics are kept)
+ *   Immich (machine-learning/models): the machine-learning models, downloaded again when missing
+ *   Plex: its own dated copies of the library database (com.plexapp.plugins.library*.db-YYYY-MM-DD)
+ * @return array<string,string>
+ */
+function dau_app_skip_paths(array $roots) {
+  $arr = ['sonarr', 'radarr', 'lidarr', 'prowlarr', 'readarr', 'whisparr'];
+  $out = [];
+  $kids = function ($d) {
+    $r = [];
+    foreach (@scandir($d) ?: [] as $n) if ($n !== '.' && $n !== '..' && $n !== DAU_QDIR_NAME && is_dir("$d/$n") && !is_link("$d/$n")) $r[] = "$d/$n";
+    return $r;
+  };
+  $add = function ($p, $what) use (&$out) { if ((is_dir($p) || is_file($p)) && !is_link($p)) $out[$p] = $what; };
+  foreach ($roots as $root) {
+    $root = rtrim((string)$root, '/');
+    if ($root === '' || !is_dir($root)) continue;
+    $cands = [$root];
+    foreach ($kids($root) as $k) { $cands[] = $k; foreach ($kids($k) as $g) $cands[] = $g; }
+    foreach ($cands as $d) {
+      if (is_file("$d/config.xml")) foreach ($arr as $a) if (is_file("$d/$a.db")) {
+        foreach (['MediaCover', 'logs', 'logs.db', 'logs.db-shm', 'logs.db-wal', 'Sentry', 'Backups'] as $c) $add("$d/$c", 'artwork, logs and own backups of Sonarr, Radarr and the like');
+        break;
+      }
+      foreach (['config', 'conf', ''] as $cd) if (is_file(rtrim("$d/$cd", '/') . '/AdGuardHome.yaml')) {
+        foreach (['workingdir/data', 'work/data', 'data'] as $wd) foreach (glob("$d/$wd/querylog.json*") ?: [] as $f) $add($f, 'the AdGuard query log');
+        break;
+      }
+      if (is_dir("$d/machine-learning/models")) $add("$d/machine-learning/models", 'Immich machine-learning models');
+      foreach (["$d/Library/Application Support/Plex Media Server", "$d/Plex Media Server", $d] as $pms)
+        if (is_file("$pms/Preferences.xml") && is_dir("$pms/Plug-in Support/Databases"))
+          foreach (glob("$pms/Plug-in Support/Databases/com.plexapp.plugins.library*.db-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]") ?: [] as $f) $add($f, 'old copies of the Plex database');
+    }
+  }
+  return $out;
+}
+
+/**
+ * Everything a backup of $roots leaves out on its own: path => what it is. $mounts adds the /cache and /transcode
+ * folders Docker says a media server maps (scheduled backup only: the backup before an update drops those mounts itself).
+ * @return array<string,string>
+ */
+function dau_backup_skip(array $roots, $mounts = true) {
+  $out = [];
+  foreach (dau_media_cache_dirs($roots) as $p) $out[$p] = 'caches of Plex, Emby and Jellyfin';
+  if ($mounts) foreach (dau_media_cache_mounts($roots) as $p) $out[$p] = 'caches of Plex, Emby and Jellyfin';
+  return $out + dau_app_skip_paths($roots);
+}
+
+/** One line for the backup result: what was left out and how much. '' when nothing was. */
+function dau_backup_skip_note(array $skip, $bytes) {
+  if (!$skip) return '';
+  $what = array_values(array_unique(array_values($skip)));
+  return 'Left out, because the apps rebuild them or the backup already holds them: ' . implode('; ', $what) . ' (' . count($skip) . ' items' . ($bytes > 0 ? ', ' . dau_bytes_text($bytes) : '') . ').';
+}
+
+/**
+ * Host folders inside $roots that a Plex, Emby or Jellyfin container maps to /cache, /transcode or /transcodes,
+ * written as they appear under the root that holds them (/mnt/cache/appdata/transcode becomes /mnt/user/appdata/transcode
+ * when /mnt/user/appdata is backed up). [] when Docker does not answer.
+ * @return string[]
+ */
+function dau_media_cache_mounts(array $roots) {
+  $all = dau_inspect_all(); if (!$all) return [];
+  $out = [];
+  foreach ($all as $c) foreach ($c['Mounts'] ?? [] as $m) {
+    if (($m['Type'] ?? 'bind') !== 'bind' || !dau_is_media_cache_mount($c, $m)) continue;
+    $tail = dau_path_tail((string)($m['Source'] ?? ''));
+    if ($tail === '' || dau_has($tail, '..')) continue;
+    foreach ($roots as $root) {
+      $rt = dau_path_tail($root);
+      if ($tail !== $rt && dau_path_in($tail, $rt)) { $p = rtrim($root, '/') . substr($tail, strlen(rtrim($rt, '/'))); if (is_dir($p) && !is_link($p)) $out[] = $p; }
+    }
+  }
+  return array_values(array_unique($out));
+}
+
+/** tar --exclude pattern for one folder: its path without the leading slash, with tar's wildcard characters escaped. */
+function dau_tar_exclude($dir) { return '--exclude=' . preg_replace('/([*?\[\]\\\\])/', '\\\\$1', ltrim($dir, '/')); }
+
+/** Bytes in $dirs according to du (0 when it cannot tell). */
+function dau_du_total(array $dirs) {
+  $t = 0.0;
+  foreach ($dirs as $d) { $r = dau_run([dau_bin('du'), '-sb', $d], 600); $t += (float)preg_replace('/\s.*/s', '', trim($r['out'])); }
+  return $t;
+}
+
+/** Container folders that only hold a media server's transcoding or cache files (official Jellyfin /cache, Plex /transcode). */
+function dau_is_media_cache_mount(array $inspect, array $mount) {
+  $img = strtolower((string)($inspect['Config']['Image'] ?? ''));
+  return (bool)preg_match('#(^|/)[^/]*(plex|emby|jellyfin)[^/]*(:|@|$)#', $img) && in_array(rtrim((string)($mount['Destination'] ?? ''), '/'), ['/cache', '/transcode', '/transcodes'], true);
+}
 
 /** @return array ['ok'=>bool,'error'=>string,'files'=>[],'kinds'=>[...],'skipped'=>[reason,...]] */
 function dau_backup_run(array $cfg, $name, array $inspect) {
@@ -1874,15 +2029,15 @@ function dau_backup_run(array $cfg, $name, array $inspect) {
     $paths = [];
     foreach (($inspect['Mounts'] ?? []) as $m) {
       $src = (string)($m['Source'] ?? '');
-      if (($m['Type'] ?? '') === 'bind' && preg_match('#^/mnt/[^\x00-\x1F]+$#', $src) && !dau_has($src, '..') && strpos($src . '/', rtrim($b['dest'], '/') . '/') !== 0 && is_dir($src)) $paths[] = $src;
+      if (($m['Type'] ?? '') === 'bind' && preg_match('#^/mnt/[^\x00-\x1F]+$#', $src) && !dau_has($src, '..') && strpos($src . '/', rtrim($b['dest'], '/') . '/') !== 0 && is_dir($src) && !dau_is_media_cache_mount($inspect, $m)) $paths[] = $src;
     }
     if (!$paths) $res['skipped'][] = 'appdata: this container has no host folders under /mnt';
     else {
-      $size = 0.0;
-      foreach ($paths as $p) { $r = dau_run([dau_bin('du'), '-sb', $p], 600); $size += (float)preg_replace('/\s.*/s', '', trim($r['out'])); }
+      $skip = array_keys(dau_backup_skip($paths, false));      // caches, logs and copies the apps rebuild: often the largest part
+      $size = max(0.0, dau_du_total($paths) - dau_du_total($skip));
       if ($need($size, 'appdata')) {
         $f = "$dir/$stamp-appdata.tar.gz"; $tmp = "$dir/.$stamp-appdata.tar.gz.partial";   // renamed only when complete: an interrupted tar never looks like a backup
-        $t = dau_run(array_merge([dau_bin('tar'), '-czf', $tmp, '--'], $paths), 3600);
+        $t = dau_run(array_merge([dau_bin('tar'), '-czf', $tmp], array_map('dau_tar_exclude', $skip), ['--'], $paths), 3600);
         if (($t['code'] === 0 || $t['code'] === 1) && !$t['timeout'] && is_file($tmp) && @rename($tmp, $f)) { $res['files'][] = $f; $res['kinds'][] = 'appdata'; }   // 1 = files changed while reading (expected, container is running)
         else { @unlink($tmp); $res['skipped'][] = 'appdata: tar failed'; }
       }
@@ -1905,7 +2060,7 @@ function dau_backup_prune($dir, $keep) {
   foreach (array_slice($sets, $keep, null, true) as $files) foreach ($files as $f) @unlink($f);
 }
 ]]></INLINE>
-<SHA256>af967243956490199f6cb6e97c7637a9f9d45d62bf7f1f166f9be73a2ee81d34</SHA256>
+<SHA256>59977c2054d5c254531ab138770b2486a44f5a6c8053b5a189876e95d70796bd</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/backups.php" Mode="0644">
@@ -1929,7 +2084,7 @@ function dau_bk_label($kind) { return $kind === 'flash' ? 'Boot drive (flash)' :
 function dau_bk_spec() {
   $one = ['schedule' => ['enum', ['off', 'weekly', 'monthly']], 'weekday' => ['int', 0, 6], 'monthday' => ['int', 1, 28], 'time' => ['time'],
           'dest' => ['path'], 'keep' => ['int', 1, 3]];
-  return ['appdata' => ['obj', $one + ['before_update' => ['bool'], 'required' => ['bool'], 'stop_containers' => ['bool'], 'exclude' => ['folders']]], 'flash' => ['obj', $one]];
+  return ['appdata' => ['obj', $one + ['before_update' => ['bool'], 'required' => ['bool'], 'stop_containers' => ['bool'], 'exclude' => ['subpaths']]], 'flash' => ['obj', $one]];
 }
 
 function dau_bk_defaults() {
@@ -2060,7 +2215,7 @@ function dau_bk_list($kind, $dest) {
 /** Keep the newest $keep archives (at least 1: the fresh copy is never removed). Returns how many were removed. */
 function dau_bk_prune($kind, $dest, $keep) {
   $keep = max(1, (int)$keep); $n = 0;
-  foreach (array_slice(dau_bk_list($kind, $dest), $keep) as $e) if (@unlink($e['file'])) $n++;
+  foreach (array_slice(dau_bk_list($kind, $dest), $keep) as $e) if (@unlink($e['file'])) { $n++; @unlink(dau_rs_sidecar($e['file'])); }
   foreach (glob(dau_bk_dir($kind, $dest) . '/.' . $kind . '-*.partial') ?: [] as $p) if (@filemtime($p) < dau_now() - 86400) @unlink($p);   // leftovers of an interrupted run
   return $n;
 }
@@ -2083,6 +2238,12 @@ function dau_bk_run($kind, array $cfg) {
     if ($r['timeout'] || trim($r['out']) === '') $res['notes'][] = 'The size of ' . $s . ' could not be measured, so free space was not checked for it.';
     $size += (float)preg_replace('/\s.*/s', '', trim($r['out']));
   }
+  $skipped = $kind === 'appdata' ? dau_backup_skip($srcs) : [];     // caches, logs and copies the apps rebuild: often the largest part
+  $skip = array_keys($skipped);
+  if ($skip) {
+    $cache = dau_du_total($skip); $size = max(0.0, $size - $cache);
+    $res['notes'][] = dau_backup_skip_note($skipped, $cache);
+  }
   $free = dau_backup_free($dir);
   if ($free !== null && $size > 0 && $size > $free) { $res['error'] = 'Not enough free space at the destination: about ' . dau_bytes_text($size) . ' to back up, ' . dau_bytes_text($free) . ' free. Nothing was changed.'; return $res; }
   $stamp = date('Ymd-His', $t0);
@@ -2092,8 +2253,17 @@ function dau_bk_run($kind, array $cfg) {
     foreach ((array)$b['exclude'] as $x) $argv[] = '--exclude=' . ltrim($s, '/') . '/' . $x;
     $argv[] = '--exclude=' . ltrim($s, '/') . '/' . DAU_QDIR_NAME;    // folders already set aside by Cleanup are not worth backing up again
   }
+  foreach ($skip as $d) $argv[] = dau_tar_exclude($d);
+  $kit = null;
+  if ($kind === 'appdata') {      // the restore kit: what a one-click restore needs (templates, containers, networks), taken while everything still runs
+    $leftOut = array_values(array_filter((array)$b['exclude'], function ($x) { return strpos($x, '/') === false; }));
+    foreach ($skip as $d) foreach ($srcs as $s) if (dirname($d) === rtrim($s, '/')) $leftOut[] = basename($d);
+    $kit = dau_rs_kit($srcs, $leftOut, $size);
+    if (!dau_write_json(DAU_RS_KIT, $kit, true)) $kit = null;
+  }
   $argv[] = '--';
   foreach ($srcs as $s) $argv[] = ltrim($s, '/');
+  if ($kit) { $argv[] = DAU_RS_KIT_IN_TAR; if (is_dir(DAU_TEMPLATES)) $argv[] = DAU_RS_TPL_IN_TAR; }
   $stopped = [];
   if ($kind === 'appdata' && !empty($b['stop_containers'])) {
     $users = dau_bk_users($cfg, $srcs);
@@ -2120,6 +2290,7 @@ function dau_bk_run($kind, array $cfg) {
   }
   if (!@rename($tmp, $final)) { @unlink($tmp); $res['error'] = 'The finished archive could not be moved into place.'; return $res; }
   @chmod($final, 0600);
+  if ($kit && !dau_write_json(dau_rs_sidecar($final), $kit, true)) $res['notes'][] = 'The restore kit could not be saved next to the archive, so this backup can only be unpacked by hand.';
   $res['ok'] = true; $res['file'] = $final; $res['size'] = (int)@filesize($final); $res['seconds'] = max(0, dau_now() - $t0);
   if ($r['code'] === 1) $res['notes'][] = 'Some files changed while they were read (normal while anything writes to them).';
   $res['pruned'] = dau_bk_prune($kind, $b['dest'], $b['keep']);
@@ -2185,7 +2356,251 @@ function dau_bk_before_update(array &$J, $what) {
   return true;
 }
 ]]></INLINE>
-<SHA256>1fedcdb1c8415c147eb4e705196816f03a859782ad5ebc3042585742e47b1b89</SHA256>
+<SHA256>b13b4986571442c9dfef562f470734a0d348cf9d9df72bf5504b2f06a4e6606c</SHA256>
+</FILE>
+
+<FILE Name="&emhttp;/include/restore.php" Mode="0644">
+<INLINE><![CDATA[<?php
+/*
+ * Unraid Swiss Manager - one-click restore of an appdata backup (for example onto a new cache drive).
+ *
+ * Every appdata backup also carries a "restore kit" (restore-kit.json, inside the archive and next to it as
+ * appdata-<stamp>.json): which folders were archived, the Docker templates, every container with its image, autostart
+ * order and network, and the custom Docker networks. With it a restore:
+ *   1. stops the containers that use the appdata folders,
+ *   2. moves every folder the backup holds that exists now into the quarantine (nothing is overwritten; undo from Cleanup),
+ *   3. unpacks the appdata folders, and puts back templates that are missing (newer ones on the flash drive are kept),
+ *   4. creates missing custom networks and autostart entries,
+ *   5. recreates missing containers with Unraid's own rebuild_container (it downloads the image when needed) and starts the rest.
+ * The flash drive must be working: the plugin runs from it. Restoring the flash drive itself is Unraid's own USB restore.
+ */
+
+define('DAU_RS_KIT',    DAU_DIR . '/restore-kit.json');
+define('DAU_AUTOSTART', '/var/lib/docker/unraid-autostart');
+const DAU_RS_KIT_IN_TAR = 'boot/config/plugins/unraid-swiss-manager/restore-kit.json';
+const DAU_RS_TPL_IN_TAR = 'boot/config/plugins/dockerMan/templates-user';
+
+/** Sidecar file of an archive: appdata-YYYYmmdd-HHMMSS.tar.gz -> appdata-YYYYmmdd-HHMMSS.json */
+function dau_rs_sidecar($archive) { return preg_replace('/\.tar\.gz$/', '.json', (string)$archive); }
+
+/** Lines of Unraid's autostart file: [['name' => .., 'wait' => ..]] in start order. */
+function dau_rs_autostart_read() {
+  $o = [];
+  foreach (@file(DAU_AUTOSTART, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $l) {
+    $p = preg_split('/\s+/', trim($l)); if (!dau_valid_name($p[0] ?? '')) continue;
+    $o[] = ['name' => $p[0], 'wait' => isset($p[1]) && ctype_digit($p[1]) ? (int)$p[1] : 0];
+  }
+  return $o;
+}
+
+/** Custom Docker networks (not bridge/host/none, not the br0-style networks Unraid makes itself). null = Docker did not answer. */
+function dau_rs_networks() {
+  $r = dau_docker(['network', 'ls', '--filter', 'type=custom', '--format', '{{.Name}}'], 30);
+  if ($r['code'] !== 0) return null;
+  $names = array_values(array_filter(preg_split('/\s+/', trim($r['out'])), function ($n) { return $n !== '' && preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $n); }));
+  if (!$names) return [];
+  $r = dau_docker(array_merge(['network', 'inspect'], $names), 30);
+  $all = json_decode($r['out'], true); if (!is_array($all)) return null;
+  $o = [];
+  foreach ($all as $n) {
+    $drv = (string)($n['Driver'] ?? ''); $name = (string)($n['Name'] ?? '');
+    if ($drv !== 'bridge' || $name === '') continue;          // macvlan / ipvlan (br0, eth0, wg0 ...) come from Unraid's network settings
+    $ipam = $n['IPAM']['Config'][0] ?? [];
+    $o[] = ['name' => $name, 'driver' => $drv, 'subnet' => (string)($ipam['Subnet'] ?? ''), 'gateway' => (string)($ipam['Gateway'] ?? '')];
+  }
+  return $o;
+}
+
+/** The restore kit for an appdata backup of $srcs. $leftOut: top-level names that are not in the archive. */
+function dau_rs_kit(array $srcs, array $leftOut, $bytes) {
+  $kit = ['version' => 1, 'plugin' => DAU_VERSION, 'at' => dau_now(), 'bytes' => (float)$bytes, 'roots' => [], 'containers' => [], 'networks' => [], 'autostart' => dau_rs_autostart_read(), 'templates' => []];
+  foreach ($srcs as $s) {
+    $names = [];
+    foreach (@scandir($s) ?: [] as $n) if ($n !== '.' && $n !== '..' && $n !== DAU_QDIR_NAME && !in_array($n, $leftOut, true)) $names[] = $n;
+    $kit['roots'][] = ['path' => $s, 'folders' => $names];
+  }
+  foreach (glob(DAU_TEMPLATES . '/my-*.xml') ?: [] as $f) $kit['templates'][] = basename($f);
+  foreach (dau_inspect_all() ?: [] as $c) {
+    $n = ltrim((string)($c['Name'] ?? ''), '/'); if (!dau_valid_name($n)) continue;
+    $kit['containers'][] = ['name' => $n, 'image' => (string)($c['Config']['Image'] ?? ''), 'running' => !empty($c['State']['Running']),
+      'net' => (string)($c['HostConfig']['NetworkMode'] ?? ''), 'template' => is_file(DAU_TEMPLATES . "/my-$n.xml")];
+  }
+  $kit['networks'] = dau_rs_networks() ?: [];
+  return $kit;
+}
+
+/** Restore kit of an archive in the list, or null (made before 2026.11.20, or not an archive of this kind). */
+function dau_rs_kit_of($file) {
+  $k = dau_read_json(dau_rs_sidecar($file), null);
+  return is_array($k) && ($k['version'] ?? 0) === 1 && isset($k['roots']) ? $k : null;
+}
+
+/** The archive named $name if it is one of the appdata backups at the configured destination. */
+function dau_rs_find(array $cfg, $name) {
+  foreach (dau_bk_list('appdata', (string)$cfg['backups']['appdata']['dest']) as $f) if ($f['name'] === $name) return $f;
+  return null;
+}
+
+/** Containers in the order they are brought back: autostart order, and one that uses another's network after that one. */
+function dau_rs_order(array $kit) {
+  $pos = []; foreach ($kit['autostart'] as $i => $a) $pos[$a['name']] = $i;
+  $cs = $kit['containers'];
+  usort($cs, function ($a, $b) use ($pos) { return ($pos[$a['name']] ?? 9999) <=> ($pos[$b['name']] ?? 9999) ?: strcmp($a['name'], $b['name']); });
+  $done = []; $out = []; $guard = 0;
+  while ($cs && $guard++ < 1000) {
+    $c = array_shift($cs);
+    $dep = preg_match('/^container:(.+)$/', $c['net'], $m) ? $m[1] : '';
+    $known = $dep !== '' && in_array($dep, array_column($kit['containers'], 'name'), true);
+    if ($known && !isset($done[$dep]) && $guard < 500) { $cs[] = $c; continue; }
+    $done[$c['name']] = true; $out[] = $c;
+  }
+  return array_merge($out, $cs);
+}
+
+/**
+ * What a restore of $name would do, without changing anything.
+ * @return array ['ok','error','at','size','folders'=>[[root,name,exists]],'containers'=>[[name,action]],'networks'=>[...],'templates'=>n,'free','need']
+ */
+function dau_rs_plan(array $cfg, $name) {
+  $f = dau_rs_find($cfg, $name);
+  if (!$f) return ['ok' => false, 'error' => 'That backup is not in the backup folder any more.'];
+  $kit = dau_rs_kit_of($f['file']);
+  if (!$kit) return ['ok' => false, 'error' => 'This backup was made before restore kits existed (2026.11.20), so it cannot be restored with one click. Unpack it by hand (see How to restore).'];
+  $have = []; foreach (dau_inspect_all() ?: [] as $c) $have[ltrim((string)($c['Name'] ?? ''), '/')] = !empty($c['State']['Running']);
+  $out = ['ok' => true, 'error' => '', 'name' => $name, 'at' => (int)$kit['at'], 'size' => $f['size'], 'need' => (float)$kit['bytes'], 'folders' => [], 'containers' => [], 'networks' => [], 'templates' => 0, 'free' => null];
+  foreach ($kit['roots'] as $r) {
+    foreach ($r['folders'] as $n) $out['folders'][] = ['root' => $r['path'], 'name' => $n, 'exists' => file_exists($r['path'] . '/' . $n)];
+    $fr = dau_backup_free(is_dir($r['path']) ? $r['path'] : dirname($r['path'])); if ($fr !== null) $out['free'] = $out['free'] === null ? $fr : min($out['free'], $fr);
+  }
+  foreach (dau_rs_order($kit) as $c) {
+    $tpl = is_file(DAU_TEMPLATES . '/my-' . $c['name'] . '.xml') || in_array('my-' . $c['name'] . '.xml', $kit['templates'], true);
+    $act = isset($have[$c['name']]) ? 'start' : ($tpl ? 'recreate' : 'missing');
+    $out['containers'][] = ['name' => $c['name'], 'image' => $c['image'], 'action' => $act, 'was_running' => $c['running']];
+  }
+  $nets = []; $r = dau_docker(['network', 'ls', '--format', '{{.Name}}'], 30); foreach (preg_split('/\s+/', trim($r['out'])) as $n) $nets[$n] = true;
+  foreach ($kit['networks'] as $n) $out['networks'][] = ['name' => $n['name'], 'exists' => isset($nets[$n['name']])];
+  foreach ($kit['templates'] as $t) if (!is_file(DAU_TEMPLATES . '/' . $t)) $out['templates']++;
+  if ($out['free'] !== null && $out['need'] > $out['free']) { $out['ok'] = false; $out['error'] = 'Not enough free space: the backup unpacks to about ' . dau_bytes_text($out['need']) . ', ' . dau_bytes_text($out['free']) . ' is free. The folders that are moved aside stay on the same disk.'; }
+  return $out;
+}
+
+/** Restore $name. Runs inside a job (lock held). @return array ['ok','error','notes'=>[],'moved','recreated','started','failed'] */
+function dau_rs_run(array $cfg, $name) {
+  $res = ['ok' => false, 'error' => '', 'notes' => [], 'moved' => [], 'recreated' => [], 'started' => [], 'failed' => []];
+  $plan = dau_rs_plan($cfg, $name);
+  if (!$plan['ok']) { $res['error'] = $plan['error']; return $res; }
+  $f = dau_rs_find($cfg, $name); $kit = dau_rs_kit_of($f['file']);
+  $roots = array_column($kit['roots'], 'path');
+
+  /* 1. stop what uses the appdata folders */
+  dau_phase('Stopping containers', ['stage' => 'stop']);
+  $users = dau_bk_users($cfg, $roots);
+  if ($users === null) { $res['error'] = 'Docker did not answer, so nothing was restored. Is Docker running (Settings > Docker)?'; return $res; }
+  $stopped = dau_bk_stop($users, $res);
+  if ($res['error'] !== '') { dau_bk_start($stopped, $res); return $res; }
+
+  /* 2. move what is there now aside: the quarantine keeps it (Cleanup tab), nothing is overwritten */
+  dau_phase('Moving the current folders aside', ['stage' => 'move']);
+  $q = dau_quarantine_load(); $stamp = gmdate('Ymd-His', dau_now());
+  foreach ($kit['roots'] as $r) {
+    $root = $r['path'];
+    if (!is_dir($root) && !@mkdir($root, 0777, true)) { $res['error'] = "Cannot create $root."; dau_quarantine_save($q); dau_bk_start($stopped, $res); return $res; }
+    $qd = $root . '/' . DAU_QDIR_NAME;
+    foreach ($r['folders'] as $n) {
+      $p = $root . '/' . $n;
+      if (!file_exists($p) && !is_link($p)) continue;
+      if (!is_dir($qd) && !@mkdir($qd, 0700, true)) { $res['error'] = 'The quarantine folder could not be created, so nothing was restored.'; break 2; }
+      $dest = $qd . '/' . $n . '__before-restore-' . $stamp;
+      if (!@rename($p, $dest)) { $res['error'] = "$p could not be moved aside, so it was not restored. Nothing else was changed after this point."; break 2; }
+      $q[] = ['id' => substr(hash('sha256', $dest . $stamp), 0, 12), 'name' => $n, 'original' => $p, 'path' => $dest, 'root' => $root, 'size' => 0, 'at' => dau_now(), 'why' => 'restore'];
+      $res['moved'][] = $n;
+    }
+  }
+  dau_quarantine_save($q);
+  if ($res['error'] !== '') { dau_rs_undo_moves($res['moved'], $kit, $stamp); dau_bk_start($stopped, $res); return $res; }
+
+  /* 3. unpack */
+  dau_phase('Unpacking ' . $name, ['stage' => 'unpack']);
+  $members = array_map(function ($p) { return ltrim($p, '/'); }, $roots);
+  $t = dau_run(array_merge([dau_bin('tar'), '-xzf', $f['file'], '-C', '/', '--'], $members), 6 * 3600, null, 4096);
+  if (($t['code'] !== 0 && $t['code'] !== 1) || $t['timeout']) {
+    $res['error'] = 'Unpacking failed: ' . (dau_clip(dau_redact(trim($t['err'])), 200) ?: 'tar stopped with code ' . $t['code']) . '. The folders that were there before are in the quarantine (Cleanup tab).';
+    dau_bk_start($stopped, $res); return $res;
+  }
+  $tmp = DAU_DIR . '/.restore-' . $stamp;
+  @mkdir($tmp, 0700, true);
+  $tt = dau_run([dau_bin('tar'), '-xzf', $f['file'], '-C', $tmp, '--', DAU_RS_TPL_IN_TAR], 600);
+  $added = 0;
+  foreach (glob($tmp . '/' . DAU_RS_TPL_IN_TAR . '/my-*.xml') ?: [] as $x) {
+    $to = DAU_TEMPLATES . '/' . basename($x);
+    if (!is_file($to)) { @mkdir(DAU_TEMPLATES, 0777, true); if (@copy($x, $to)) $added++; }
+  }
+  dau_run([dau_bin('rm'), '-rf', '--', $tmp], 120);
+  if ($added) $res['notes'][] = $added . ' Docker template' . ($added === 1 ? '' : 's') . ' put back.';
+  elseif ($tt['code'] > 1) $res['notes'][] = 'The templates could not be read from the backup; the ones on the flash drive were used.';
+
+  /* 4. networks and autostart */
+  dau_phase('Setting up Docker', ['stage' => 'containers']);
+  $nets = []; $r = dau_docker(['network', 'ls', '--format', '{{.Name}}'], 30); foreach (preg_split('/\s+/', trim($r['out'])) as $n) $nets[$n] = true;
+  foreach ($kit['networks'] as $n) {
+    if (isset($nets[$n['name']])) continue;
+    $a = ['network', 'create', '--driver', 'bridge'];
+    if ($n['subnet'] !== '') { $a[] = '--subnet'; $a[] = $n['subnet']; }
+    if ($n['gateway'] !== '') { $a[] = '--gateway'; $a[] = $n['gateway']; }
+    $a[] = $n['name'];
+    $c = dau_docker($a, 60);
+    $res['notes'][] = $c['code'] === 0 ? 'Network ' . $n['name'] . ' created.' : 'Network ' . $n['name'] . ' could not be created: ' . dau_clip(trim($c['err']), 120);
+  }
+  $auto = dau_rs_autostart_read(); $inAuto = array_column($auto, 'name'); $add = [];
+  foreach ($kit['autostart'] as $a) if (!in_array($a['name'], $inAuto, true)) $add[] = $a['name'] . ($a['wait'] ? ' ' . $a['wait'] : '');
+  if ($add) { @mkdir(dirname(DAU_AUTOSTART), 0755, true); @file_put_contents(DAU_AUTOSTART, implode("\n", array_merge(array_map(function ($a) { return $a['name'] . ($a['wait'] ? ' ' . $a['wait'] : ''); }, $auto), $add)) . "\n"); }
+
+  /* 5. containers: recreate the missing ones, start the ones that ran */
+  $script = DAU_DM . '/scripts/rebuild_container';
+  foreach ($plan['containers'] as $c) {
+    $n = $c['name'];
+    if ($c['action'] === 'recreate') {
+      dau_phase('Recreating ' . $n . ' (the image is downloaded if needed)', ['stage' => 'containers']);
+      if (!is_file($script)) { $res['failed'][] = $n; continue; }
+      $r = dau_run([DAU_PHP, $script, $n], 1800);
+      $i = dau_inspect_one($n);
+      if ($i === null) { $res['failed'][] = $n; continue; }
+      $res['recreated'][] = $n;
+      if ($c['was_running'] && empty($i['State']['Running'])) { $s = dau_docker_restore($n); if ($s === 'failed') $res['failed'][] = $n; }
+    } elseif ($c['action'] === 'start' && in_array($n, $stopped, true)) {
+      $s = dau_docker_restore($n); if ($s === 'started' || $s === 'running') $res['started'][] = $n; else $res['failed'][] = $n;
+    } elseif ($c['action'] === 'missing') $res['notes'][] = $n . ' has no Unraid template, so it was not recreated.';
+  }
+  $res['ok'] = !$res['failed'];
+  if ($res['failed']) $res['error'] = 'The files are back, but these containers did not start: ' . implode(', ', array_unique($res['failed'])) . '. Open them on the Docker tab.';
+  return $res;
+}
+
+/** Put folders moved aside by a failed restore back where they were (only those of this run). */
+function dau_rs_undo_moves(array $moved, array $kit, $stamp) {
+  $q = dau_quarantine_load();
+  foreach ($kit['roots'] as $r) foreach ($moved as $n) {
+    $p = $r['path'] . '/' . $n; $src = $r['path'] . '/' . DAU_QDIR_NAME . '/' . $n . '__before-restore-' . $stamp;
+    if (is_dir($src) && !file_exists($p) && @rename($src, $p)) $q = array_values(array_filter($q, function ($e) use ($src) { return ($e['path'] ?? '') !== $src; }));
+  }
+  dau_quarantine_save($q);
+}
+
+/** As a job: history, log and notification like a backup. */
+function dau_job_restore(array &$J, $name) {
+  $cfg = $J['cfg']; $t0 = dau_now();
+  dau_sticky(['steps' => [['stop', 'Stop containers'], ['move', 'Move current folders aside'], ['unpack', 'Unpack the backup'], ['containers', 'Bring containers back']]]);
+  try { $r = dau_rs_run($cfg, $name); }
+  catch (Throwable $e) { $r = ['ok' => false, 'error' => 'Unexpected error: ' . $e->getMessage(), 'notes' => [], 'moved' => [], 'recreated' => [], 'started' => [], 'failed' => []]; }
+  $msg = 'From ' . $name . '. ' . ($r['moved'] ? count($r['moved']) . ' folders moved to the quarantine first. ' : '') . ($r['recreated'] ? 'Recreated: ' . implode(', ', $r['recreated']) . '. ' : '') . ($r['started'] ? 'Started again: ' . count($r['started']) . '. ' : '') . implode(' ', $r['notes']);
+  dau_history_add(['type' => 'backup', 'name' => dau_bk_label('appdata'), 'action' => 'restore', 'result' => $r['ok'] ? 'completed' : 'failed', 'started' => $t0, 'finished' => dau_now(),
+    'trigger' => $J['trigger'], 'error' => $r['error'], 'message' => trim($msg)], (int)$cfg['history']['max_entries']);
+  dau_log($r['ok'] ? 'info' : 'error', 'backup', 'appdata', 'restore', $r['ok'] ? 'ok' : 'fail', $r['ok'] ? trim($msg) : $r['error']);
+  $J['events'][] = dau_ev('backup', dau_bk_label('appdata'), $r['ok'] ? 'restore_done' : 'restore_failed', ['detail' => trim($msg), 'error' => $r['error'], 'next' => $r['ok'] ? '' : 'Open the Activity tab for details; the folders that were there before are in the quarantine.']);
+  return $r;
+}
+]]></INLINE>
+<SHA256>c04d2db56601054c51df89ca9d4cd75724c37414b36bba617f5aca8528448d32</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/docker.php" Mode="0644">
@@ -4544,7 +4959,7 @@ function dau_job_finish(array &$J) {
             'os_withdrawn' => ['update withdrawn', 'normal'], 'os_check_failed' => ['update check failed', 'warning'], 'os_installed' => ['now installed', 'normal'],
             'os_staged' => ['update installed, reboot needed', 'warning'], 'os_rebooting' => ['rebooting to finish the update', 'warning'], 'os_reboot_blocked' => ['reboot postponed', 'warning'],
             'os_install_failed' => ['update FAILED, nothing was rebooted', 'alert'], 'os_workflow_started' => ['pre-update maintenance started', 'normal'], 'os_workflow_done' => ['pre-update checks passed', 'normal'],
-            'os_awaiting' => ['waiting for your confirmation', 'warning'], 'os_prereq_failed' => ['update STOPPED, a prerequisite failed', 'alert'], 'os_aborted' => ['update aborted', 'warning'], 'rolled_back' => ['rolled back to the earlier image', 'warning'], 'removed' => ['removed', 'normal'], 'remove_failed' => ['removal FAILED', 'alert'], 'recovered' => ['interrupted job recovered', 'alert'], 'backup_done' => ['backup completed', 'normal'], 'backup_failed' => ['backup FAILED', 'alert'], 'rollback_failed' => ['rollback FAILED', 'alert'], 'major_jump' => ['major version update held back', 'warning'], 'cleanup_report' => ['space you can free', 'normal'], 'cleanup_auto' => ['Smart cleanup (safe) done', 'normal'], 'cleanup_auto_failed' => ['Smart cleanup (safe) had problems', 'warning'], 'os_verified' => ['update verified after reboot', 'normal'], 'os_unverified' => ['update is NOT active after reboot', 'alert']];
+            'os_awaiting' => ['waiting for your confirmation', 'warning'], 'os_prereq_failed' => ['update STOPPED, a prerequisite failed', 'alert'], 'os_aborted' => ['update aborted', 'warning'], 'rolled_back' => ['rolled back to the earlier image', 'warning'], 'removed' => ['removed', 'normal'], 'remove_failed' => ['removal FAILED', 'alert'], 'recovered' => ['interrupted job recovered', 'alert'], 'backup_done' => ['backup completed', 'normal'], 'backup_failed' => ['backup FAILED', 'alert'], 'restore_done' => ['restored', 'normal'], 'restore_failed' => ['restore FAILED', 'alert'], 'rollback_failed' => ['rollback FAILED', 'alert'], 'major_jump' => ['major version update held back', 'warning'], 'cleanup_report' => ['space you can free', 'normal'], 'cleanup_auto' => ['Smart cleanup (safe) done', 'normal'], 'cleanup_auto_failed' => ['Smart cleanup (safe) had problems', 'warning'], 'os_verified' => ['update verified after reboot', 'normal'], 'os_unverified' => ['update is NOT active after reboot', 'alert']];
     list($t, $imp) = $map[$e['kind']] ?? [$e['kind'], 'normal'];
     $d = trim(($e['installed'] ?? '') && ($e['available'] ?? '') ? $e['installed'] . ' -> ' . $e['available'] : '');
     $d .= ' ' . (($e['error'] ?? '') ?: ($e['reason'] ?? '')) . ($e['type'] === 'cleanup' ? ' ' . ($e['detail'] ?? '') : '') . (!empty($e['next']) && $e['type'] === 'os' ? ' ' . $e['next'] : '');
@@ -4708,6 +5123,8 @@ function dau_job_main($action, array $o = []) {
       dau_job_docker($J, ['names' => $o['names'] ?? [], 'update' => true, 'manual' => true, 'allow_major' => $o['allow_major'] ?? [], 'refresh' => !dau_docker_status_fresh()]);
     } elseif ($action === 'backup') {
       foreach ((array)($o['kinds'] ?? []) as $bk) if (in_array($bk, DAU_BK_KINDS, true)) dau_job_backup($J, $bk, 'manual');
+    } elseif ($action === 'restore') {
+      if (preg_match('/^appdata-\d{8}-\d{6}\.tar\.gz$/', (string)($o['name'] ?? ''))) dau_job_restore($J, (string)$o['name']);
     } elseif ($action === 'remove_docker') {
       dau_job_remove($J, 'docker', array_values(array_filter((array)($o['names'] ?? []), 'dau_valid_name')), ['image' => !empty($o['image']), 'template' => !empty($o['template'])]);
     } elseif ($action === 'remove_plugins') {
@@ -4781,7 +5198,7 @@ function dau_uninstall() {
   if (is_executable('/usr/local/sbin/update_cron')) dau_run(['/usr/local/sbin/update_cron'], 30);
 }
 ]]></INLINE>
-<SHA256>db9530b4094fcf46a015ca1074213aa2a5b43bf7cc5a1c757c6bb266e1c39359</SHA256>
+<SHA256>d50448632fcfd078586c0ce7d379763cc52cc1fb91361a0b5d9394bf5e396677</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/api.php" Mode="0644">
@@ -5024,10 +5441,18 @@ switch ($action) {
       $next = ($b['schedule'] !== 'off' && $why === '' && $sched) ? dau_next_run($sched, dau_slot_rec($st, 'b:' . $k), $now) : null;
       $dir = dau_bk_dir($k, (string)$b['dest']);
       $o[$k] = ['label' => dau_bk_label($k), 'cfg' => $b, 'problem' => $why, 'sources' => dau_bk_sources($k, $cfg), 'last' => $st['backups'][$k] ?? null, 'next' => $next,
-        'text' => $b['schedule'] === 'off' ? '' : dau_sched_text($sched), 'files' => $b['dest'] !== '' && dau_valid_dest($b['dest']) ? dau_bk_list($k, $b['dest']) : [],
+        'text' => $b['schedule'] === 'off' ? '' : dau_sched_text($sched),
+        'files' => $b['dest'] !== '' && dau_valid_dest($b['dest']) ? array_map(function ($f) use ($k) { return $f + ['restore' => $k === 'appdata' && is_file(dau_rs_sidecar($f['file']))]; }, dau_bk_list($k, $b['dest'])) : [],
         'folder' => $b['dest'] !== '' ? $dir : '', 'free' => $why === '' && is_dir($b['dest']) ? dau_backup_free($b['dest']) : null];
     }
     out(['ok' => true, 'backups' => $o, 'running' => dau_run_info()['running'], 'now' => $now]);
+  }
+
+  /* what restoring one appdata backup would do (reads only) */
+  case 'restore_plan': {
+    $n = (string)($_GET['name'] ?? $_POST['name'] ?? '');
+    if (!preg_match('/^appdata-\d{8}-\d{6}\.tar\.gz$/', $n)) fail('Unknown backup');
+    out(dau_rs_plan(dau_load_config(), $n));
   }
 
   case 'run': {
@@ -5057,6 +5482,12 @@ switch ($action) {
       $cfg = dau_load_config();
       foreach ($kinds as $kk) { $why = dau_bk_check_dest($kk, $cfg); if ($why !== '') fail(dau_bk_label($kk) . ': ' . $why); }
       $args = ['--backup=' . $k];
+    } elseif ($what === 'restore') {
+      $n = (string)($_POST['name'] ?? '');
+      if (!preg_match('/^appdata-\d{8}-\d{6}\.tar\.gz$/', $n)) fail('Unknown backup');
+      if (($_POST['confirm'] ?? '') !== '1') fail('A restore needs an explicit confirmation.');
+      $p = dau_rs_plan(dau_load_config(), $n); if (!$p['ok']) fail($p['error']);
+      $args = ['--restore=' . $n];
     } elseif ($what === 'channel') {
       $ch = (string)($_POST['channel'] ?? ''); if (!in_array($ch, ['stable', 'beta'], true)) fail('Unknown channel');
       if (($_POST['confirm'] ?? '') !== '1') fail('Changing the plugin branch needs an explicit confirmation.');
@@ -5218,7 +5649,7 @@ switch ($action) {
   default: fail('Unknown action', 404);
 }
 ]]></INLINE>
-<SHA256>f89b1fa92a76bdb210748ee29b1221de15f05b001130baa388f9d10b68b600a3</SHA256>
+<SHA256>7195864e60d1abfa265e75511645fa8379572c01065d4c584e93ae904d32d54f</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/images/unraid-swiss-manager.svg" Mode="0644">
@@ -5262,7 +5693,7 @@ require_once '/usr/local/emhttp/plugins/unraid-swiss-manager/include/lib.php';
 set_time_limit(0);
 ini_set('display_errors', '0');
 
-$o = getopt('', ['tick', 'check', 'update-docker:', 'backup:', 'allow-major:', 'rollback:', 'update-plugins:', 'channel:', 'force', 'os-check', 'os-install', 'os-install-reboot', 'os-confirm', 'pre-plugins:', 'pre-docker:', 'install', 'uninstall', 'remove-docker:', 'remove-plugins:', 'remove-image:', 'archive-template:']);
+$o = getopt('', ['tick', 'check', 'update-docker:', 'backup:', 'restore:', 'allow-major:', 'rollback:', 'update-plugins:', 'channel:', 'force', 'os-check', 'os-install', 'os-install-reboot', 'os-confirm', 'pre-plugins:', 'pre-docker:', 'install', 'uninstall', 'remove-docker:', 'remove-plugins:', 'remove-image:', 'archive-template:']);
 $list = function ($k) use ($o) { return isset($o[$k]) ? array_values(array_filter(array_map('trim', explode(',', (string)$o[$k])))) : []; };
 
 if (isset($o['install']))   { dau_install(); exit(0); }
@@ -5278,13 +5709,14 @@ if (isset($o['channel']))        { $r = dau_channel_install((string)$o['channel'
 if (isset($o['rollback']))       exit(dau_job_main('rollback', ['name' => dau_valid_name((string)$o['rollback']) ? (string)$o['rollback'] : '']));
 if (isset($o['remove-docker']))  exit(dau_job_main('remove_docker', ['names' => $list('remove-docker'), 'image' => ($o['remove-image'] ?? '') === '1', 'template' => ($o['archive-template'] ?? '') === '1']));
 if (isset($o['remove-plugins'])) exit(dau_job_main('remove_plugins', ['names' => $list('remove-plugins')]));
+if (isset($o['restore'])) exit(dau_job_main('restore', ['name' => (string)$o['restore']]));
 if (isset($o['backup'])) exit(dau_job_main('backup', ['kinds' => $o['backup'] === 'all' ? DAU_BK_KINDS : [$o['backup']]]));
 if (isset($o['update-docker']))  exit(dau_job_main('docker',  ['names' => array_values(array_filter($list('update-docker'), 'dau_valid_name')), 'allow_major' => array_values(array_filter($list('allow-major'), 'dau_valid_name'))]));
 if (isset($o['update-plugins'])) exit(dau_job_main('plugins', ['names' => array_values(array_filter($list('update-plugins'), 'dau_valid_plg'))]));
 fwrite(STDERR, "usage: run.php --tick | --check | --update-docker=a,b | --update-plugins=a.plg | --os-check | --os-install | --os-install-reboot | --install | --uninstall\n");
 exit(64);
 ]]></INLINE>
-<SHA256>26546f83b7293ef339171338cee3882aff5c0bd74fc7a9e1beaab5603f0ec20d</SHA256>
+<SHA256>064f2af33228500b95439c5657b17c503de7655cb0774e29e6d3bffece328dd5</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/assets/app.css" Mode="0644">
@@ -6584,7 +7016,7 @@ exit(64);
     p.appendChild(h('div', { class: 'fld' }, h('label', null, 'How many to keep'), kp, h('span', { class: 'hint' }, 'After a new backup has finished successfully, older ones beyond this number are deleted. The newest one is never deleted, and a failed backup deletes nothing. Room for one extra copy is needed while it runs.')));
     if (k === 'appdata') {
       var t = h('textarea', { rows: 3, spellcheck: 'false', 'aria-label': 'Folders to leave out', style: 'width:100%;max-width:420px;font-family:ui-monospace,Menlo,Consolas,monospace', oninput: function () { b.exclude = t.value.split('\n').map(function (x) { return x.trim(); }).filter(Boolean); } }, (b.exclude || []).join('\n'));
-      p.appendChild(h('div', { class: 'fld' }, h('label', null, 'Leave these folders out (optional)'), t, h('span', { class: 'hint' }, 'One folder name per line, directly inside the appdata folder, for example a media cache that can be rebuilt.')));
+      p.appendChild(h('div', { class: 'fld' }, h('label', null, 'Also leave these out (optional)'), t, h('span', { class: 'hint' }, 'One per line: a folder inside the appdata folder (myapp) or a folder or file deeper in it (myapp/backups). * matches any name. Left out on their own, because the apps rebuild them or the backup already holds them: the caches of Plex, Emby and Jellyfin; artwork, logs and own backups of Sonarr, Radarr and the like; the AdGuard query log; Immich machine-learning models; old copies of the Plex database. Libraries, settings and Metadata are kept.')));
     }
     /* actions */
     var why = info && info.problem ? info.problem : busy ? 'Another job is running. Wait until it has finished.' : dirty ? 'Save your changes first.' : '';
@@ -6598,17 +7030,46 @@ exit(64);
     if (info && info.folder) p.appendChild(h('div', { class: 'muted sm' }, h('span', { class: 'mono' }, info.folder + '/'), info.free != null ? ' · ' + bytes(info.free) + ' free' : ''));
     if (!files.length) p.appendChild(h('p', { class: 'muted' }, info && info.folder ? 'No backup there yet.' : 'Choose a folder to see your backups.'));
     else {
-      var tb = h('table', { class: 'resp' }); tb.appendChild(h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', null, 'File'), h('th', null, 'Size'))));
+      var tb = h('table', { class: 'resp' }); tb.appendChild(h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', null, 'File'), h('th', null, 'Size'), k === 'appdata' ? h('th', null, '') : null)));
       var bd = h('tbody'); tb.appendChild(bd);
-      files.forEach(function (f, i) { bd.appendChild(h('tr', { class: 'row' }, h('td', { 'data-l': 'Date' }, when(f.ts), i === 0 ? h('span', { class: 'badge ok' }, 'Newest') : null), h('td', { 'data-l': 'File', class: 'mono' }, f.name), h('td', { 'data-l': 'Size' }, bytes(f.size)))); });
+      files.forEach(function (f, i) {
+        var rs = k !== 'appdata' ? null : f.restore
+          ? h('button', { class: 'btn sm', disabled: busy, title: busy ? 'Another job is running.' : 'Put this backup back: appdata, Docker templates and containers', onclick: function () { restoreConfirm(f.name); } }, 'Restore…')
+          : h('span', { class: 'muted sm', title: 'Made before 2026.11.20: unpack it by hand (How to restore)' }, 'By hand');
+        bd.appendChild(h('tr', { class: 'row' }, h('td', { 'data-l': 'Date' }, when(f.ts), i === 0 ? h('span', { class: 'badge ok' }, 'Newest') : null), h('td', { 'data-l': 'File', class: 'mono' }, f.name), h('td', { 'data-l': 'Size' }, bytes(f.size)), rs ? h('td', { 'data-l': '' }, rs) : null));
+      });
       p.appendChild(tb);
     }
     var how = h('details', { class: 'more' }, h('summary', null, 'How to restore'));
     how.appendChild(h('p', { class: 'muted sm' }, k === 'flash'
       ? 'Each file is a normal .tar.gz of the boot drive. To restore, prepare a fresh USB drive the usual way, then unpack the backup onto it (for example: tar -xzf flash-DATE.tar.gz -C /tmp/restore, then copy the boot folder contents onto the drive). Restore your licence key and config files from it.'
-      : 'Each file is a normal .tar.gz that keeps the original folder paths. Stop the container first, then unpack, for example: tar -xzf appdata-DATE.tar.gz -C / . To restore only one folder, name it at the end of the command (the paths start without a leading slash). Restoring over a running container can corrupt its data.'));
+      : 'Restore… puts a backup back with one click: it stops the containers, moves the folders that are there now into the quarantine (nothing is overwritten; get them back from the Cleanup tab), unpacks the backup, puts back missing Docker templates, networks and autostart entries, then recreates and starts every container. After a cache drive failure: set up the new drive, start the array and Docker, install this plugin, set the same backup folder, then click Restore…. By hand: each file is a normal .tar.gz that keeps the original folder paths. Stop the container first, then unpack, for example: tar -xzf appdata-DATE.tar.gz -C / . To restore only one folder, name it at the end of the command (the paths start without a leading slash). Restoring over a running container can corrupt its data.'));
     p.appendChild(how);
     return p;
+  }
+  function restoreConfirm(name) {
+    var m = modal('Restore this backup?');
+    m.body.appendChild(loading('Checking what the restore would do'));
+    api('restore_plan', { name: name }).then(function (p) {
+      m.body.innerHTML = '';
+      if (!p.ok) { m.body.appendChild(h('div', { class: 'banner bad' }, p.error || 'This backup cannot be restored.')); return; }
+      var moved = p.folders.filter(function (f) { return f.exists; }).length;
+      var rec = p.containers.filter(function (c) { return c.action === 'recreate'; }), miss = p.containers.filter(function (c) { return c.action === 'missing'; });
+      var nets = p.networks.filter(function (n) { return !n.exists; });
+      m.body.appendChild(h('p', null, 'From ' + when(p.at) + ' (' + bytes(p.size) + ', about ' + bytes(p.need) + ' unpacked' + (p.free != null ? ', ' + bytes(p.free) + ' free' : '') + ').'));
+      var ul = h('ul', { class: 'sm' });
+      ul.appendChild(h('li', null, p.folders.length + ' appdata folders are put back' + (moved ? '; the ' + moved + ' that exist now are moved into the quarantine first (Cleanup tab), nothing is overwritten.' : '.')));
+      ul.appendChild(h('li', null, rec.length ? 'Recreated from their templates (images are downloaded if needed): ' + rec.map(function (c) { return c.name; }).join(', ') + '.' : 'All containers exist; the ones that ran are started again.'));
+      if (p.templates) ul.appendChild(h('li', null, p.templates + ' missing Docker templates are put back.'));
+      if (nets.length) ul.appendChild(h('li', null, 'Docker networks created: ' + nets.map(function (n) { return n.name; }).join(', ') + '.'));
+      if (miss.length) ul.appendChild(h('li', { class: 'warn' }, 'No template, so not recreated: ' + miss.map(function (c) { return c.name; }).join(', ') + '.'));
+      m.body.appendChild(ul);
+      m.body.appendChild(h('p', { class: 'muted sm' }, 'Containers that use appdata are offline while it runs. Data written since this backup is in the quarantine afterwards.'));
+      var cb = h('input', { type: 'checkbox' }); m.body.appendChild(h('label', { class: 'switch' }, cb, 'I want to put this backup back'));
+      var go = h('button', { class: 'btn pri', disabled: true, onclick: function () { m.close(); runJob('restore', [], 'Restore started', { name: name, confirm: '1' }); } }, 'Restore');
+      cb.onchange = function () { go.disabled = !cb.checked; };
+      m.foot.appendChild(h('button', { class: 'btn', onclick: m.close }, 'Cancel')); m.foot.appendChild(go);
+    });
   }
   function saveBackups() {
     /* only this tab's settings: unfinished edits on the Settings tab stay unfinished */
@@ -6631,7 +7092,7 @@ exit(64);
       h('div', null, fSwitch('Verify after update (state and health)', 'global.verify.enabled', 'A container without a health check is not treated as failed.'), fNum('Verification timeout', 'global.verify.timeout', 10, 900, null, 'seconds'), fSwitch('Check free disk space before pulling', 'global.disk_check'), fNum('Warn below', 'global.min_free_gb', 0, 500, null, 'GB free')),
       h('div', null, fNum('Retry failed pulls up to', 'global.retry.max', 0, 5, 'Only network/registry errors that left the container untouched are retried. Never retries once the container was changed.', 'times'), fNum('Retry interval', 'global.retry.interval_min', 5, 1440, null, 'minutes'), fSwitch('Remove the old image after a verified update', 'global.cleanup', 'Only that one image, and only if nothing else uses it. Never a broad prune.')))));
     w.appendChild(section('Docker: backups before update (optional)', h('div', null,
-      h('p', { class: 'muted sm' }, 'Turn on per container in its Settings. "Config" saves the template and container definition (small). "Image" saves the current image as a tar file (large). "Appdata" archives the container\'s host folders while it is still running, so databases may not be consistent: use a dedicated backup plugin for those.'),
+      h('p', { class: 'muted sm' }, 'Turn on per container in its Settings. "Config" saves the template and container definition (small). "Image" saves the current image as a tar file (large). "Appdata" archives the container\'s host folders while it is still running, so databases may not be consistent: use a dedicated backup plugin for those. Caches, logs and copies the apps rebuild (Plex, Emby, Jellyfin, Sonarr, Radarr and the like) are left out.'),
       h('div', { class: 'grid2' }, h('div', null, fSwitch('Enable backups', 'global.backup.enabled'), fText('Destination folder (under /mnt)', 'global.backup.dest', 'Example: /mnt/user/backups/unraid-swiss-manager', '/mnt/user/backups'), fNum('Keep newest', 'global.backup.retention', 1, 20, null, 'backups per container')),
         h('div', null, fSwitch('Config (template + settings)', 'global.backup.config'), fSwitch('Image (docker save)', 'global.backup.image'), fSwitch('Appdata folders (not application-consistent)', 'global.backup.appdata'), fSwitch('Backup is required: do not update if it fails', 'global.backup.required'))))));
     w.appendChild(section('Plugins', h('div', { class: 'grid2' },
@@ -6806,7 +7267,7 @@ exit(64);
   load('overview').then(function () { if (S.ov && S.ov.run.running) startPoll(); return deepLink(); });
 })();
 ]]></INLINE>
-<SHA256>1c6c2825b538ee7804e42cfd763283d05bc7a98ed70206790235481e22edccfb</SHA256>
+<SHA256>051f0fea9a99819adaa88df130aa807132b8cf2227b9e22d314942dc67bbc373</SHA256>
 </FILE>
 
 <FILE Run="/bin/bash">

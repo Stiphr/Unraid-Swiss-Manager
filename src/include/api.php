@@ -237,10 +237,18 @@ switch ($action) {
       $next = ($b['schedule'] !== 'off' && $why === '' && $sched) ? dau_next_run($sched, dau_slot_rec($st, 'b:' . $k), $now) : null;
       $dir = dau_bk_dir($k, (string)$b['dest']);
       $o[$k] = ['label' => dau_bk_label($k), 'cfg' => $b, 'problem' => $why, 'sources' => dau_bk_sources($k, $cfg), 'last' => $st['backups'][$k] ?? null, 'next' => $next,
-        'text' => $b['schedule'] === 'off' ? '' : dau_sched_text($sched), 'files' => $b['dest'] !== '' && dau_valid_dest($b['dest']) ? dau_bk_list($k, $b['dest']) : [],
+        'text' => $b['schedule'] === 'off' ? '' : dau_sched_text($sched),
+        'files' => $b['dest'] !== '' && dau_valid_dest($b['dest']) ? array_map(function ($f) use ($k) { return $f + ['restore' => $k === 'appdata' && is_file(dau_rs_sidecar($f['file']))]; }, dau_bk_list($k, $b['dest'])) : [],
         'folder' => $b['dest'] !== '' ? $dir : '', 'free' => $why === '' && is_dir($b['dest']) ? dau_backup_free($b['dest']) : null];
     }
     out(['ok' => true, 'backups' => $o, 'running' => dau_run_info()['running'], 'now' => $now]);
+  }
+
+  /* what restoring one appdata backup would do (reads only) */
+  case 'restore_plan': {
+    $n = (string)($_GET['name'] ?? $_POST['name'] ?? '');
+    if (!preg_match('/^appdata-\d{8}-\d{6}\.tar\.gz$/', $n)) fail('Unknown backup');
+    out(dau_rs_plan(dau_load_config(), $n));
   }
 
   case 'run': {
@@ -270,6 +278,12 @@ switch ($action) {
       $cfg = dau_load_config();
       foreach ($kinds as $kk) { $why = dau_bk_check_dest($kk, $cfg); if ($why !== '') fail(dau_bk_label($kk) . ': ' . $why); }
       $args = ['--backup=' . $k];
+    } elseif ($what === 'restore') {
+      $n = (string)($_POST['name'] ?? '');
+      if (!preg_match('/^appdata-\d{8}-\d{6}\.tar\.gz$/', $n)) fail('Unknown backup');
+      if (($_POST['confirm'] ?? '') !== '1') fail('A restore needs an explicit confirmation.');
+      $p = dau_rs_plan(dau_load_config(), $n); if (!$p['ok']) fail($p['error']);
+      $args = ['--restore=' . $n];
     } elseif ($what === 'channel') {
       $ch = (string)($_POST['channel'] ?? ''); if (!in_array($ch, ['stable', 'beta'], true)) fail('Unknown channel');
       if (($_POST['confirm'] ?? '') !== '1') fail('Changing the plugin branch needs an explicit confirmation.');

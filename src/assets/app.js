@@ -1029,7 +1029,7 @@
     p.appendChild(h('div', { class: 'fld' }, h('label', null, 'How many to keep'), kp, h('span', { class: 'hint' }, 'After a new backup has finished successfully, older ones beyond this number are deleted. The newest one is never deleted, and a failed backup deletes nothing. Room for one extra copy is needed while it runs.')));
     if (k === 'appdata') {
       var t = h('textarea', { rows: 3, spellcheck: 'false', 'aria-label': 'Folders to leave out', style: 'width:100%;max-width:420px;font-family:ui-monospace,Menlo,Consolas,monospace', oninput: function () { b.exclude = t.value.split('\n').map(function (x) { return x.trim(); }).filter(Boolean); } }, (b.exclude || []).join('\n'));
-      p.appendChild(h('div', { class: 'fld' }, h('label', null, 'Leave these folders out (optional)'), t, h('span', { class: 'hint' }, 'One folder name per line, directly inside the appdata folder, for example a media cache that can be rebuilt.')));
+      p.appendChild(h('div', { class: 'fld' }, h('label', null, 'Also leave these out (optional)'), t, h('span', { class: 'hint' }, 'One per line: a folder inside the appdata folder (myapp) or a folder or file deeper in it (myapp/backups). * matches any name. Left out on their own, because the apps rebuild them or the backup already holds them: the caches of Plex, Emby and Jellyfin; artwork, logs and own backups of Sonarr, Radarr and the like; the AdGuard query log; Immich machine-learning models; old copies of the Plex database. Libraries, settings and Metadata are kept.')));
     }
     /* actions */
     var why = info && info.problem ? info.problem : busy ? 'Another job is running. Wait until it has finished.' : dirty ? 'Save your changes first.' : '';
@@ -1043,17 +1043,46 @@
     if (info && info.folder) p.appendChild(h('div', { class: 'muted sm' }, h('span', { class: 'mono' }, info.folder + '/'), info.free != null ? ' · ' + bytes(info.free) + ' free' : ''));
     if (!files.length) p.appendChild(h('p', { class: 'muted' }, info && info.folder ? 'No backup there yet.' : 'Choose a folder to see your backups.'));
     else {
-      var tb = h('table', { class: 'resp' }); tb.appendChild(h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', null, 'File'), h('th', null, 'Size'))));
+      var tb = h('table', { class: 'resp' }); tb.appendChild(h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', null, 'File'), h('th', null, 'Size'), k === 'appdata' ? h('th', null, '') : null)));
       var bd = h('tbody'); tb.appendChild(bd);
-      files.forEach(function (f, i) { bd.appendChild(h('tr', { class: 'row' }, h('td', { 'data-l': 'Date' }, when(f.ts), i === 0 ? h('span', { class: 'badge ok' }, 'Newest') : null), h('td', { 'data-l': 'File', class: 'mono' }, f.name), h('td', { 'data-l': 'Size' }, bytes(f.size)))); });
+      files.forEach(function (f, i) {
+        var rs = k !== 'appdata' ? null : f.restore
+          ? h('button', { class: 'btn sm', disabled: busy, title: busy ? 'Another job is running.' : 'Put this backup back: appdata, Docker templates and containers', onclick: function () { restoreConfirm(f.name); } }, 'Restore…')
+          : h('span', { class: 'muted sm', title: 'Made before 2026.11.20: unpack it by hand (How to restore)' }, 'By hand');
+        bd.appendChild(h('tr', { class: 'row' }, h('td', { 'data-l': 'Date' }, when(f.ts), i === 0 ? h('span', { class: 'badge ok' }, 'Newest') : null), h('td', { 'data-l': 'File', class: 'mono' }, f.name), h('td', { 'data-l': 'Size' }, bytes(f.size)), rs ? h('td', { 'data-l': '' }, rs) : null));
+      });
       p.appendChild(tb);
     }
     var how = h('details', { class: 'more' }, h('summary', null, 'How to restore'));
     how.appendChild(h('p', { class: 'muted sm' }, k === 'flash'
       ? 'Each file is a normal .tar.gz of the boot drive. To restore, prepare a fresh USB drive the usual way, then unpack the backup onto it (for example: tar -xzf flash-DATE.tar.gz -C /tmp/restore, then copy the boot folder contents onto the drive). Restore your licence key and config files from it.'
-      : 'Each file is a normal .tar.gz that keeps the original folder paths. Stop the container first, then unpack, for example: tar -xzf appdata-DATE.tar.gz -C / . To restore only one folder, name it at the end of the command (the paths start without a leading slash). Restoring over a running container can corrupt its data.'));
+      : 'Restore… puts a backup back with one click: it stops the containers, moves the folders that are there now into the quarantine (nothing is overwritten; get them back from the Cleanup tab), unpacks the backup, puts back missing Docker templates, networks and autostart entries, then recreates and starts every container. After a cache drive failure: set up the new drive, start the array and Docker, install this plugin, set the same backup folder, then click Restore…. By hand: each file is a normal .tar.gz that keeps the original folder paths. Stop the container first, then unpack, for example: tar -xzf appdata-DATE.tar.gz -C / . To restore only one folder, name it at the end of the command (the paths start without a leading slash). Restoring over a running container can corrupt its data.'));
     p.appendChild(how);
     return p;
+  }
+  function restoreConfirm(name) {
+    var m = modal('Restore this backup?');
+    m.body.appendChild(loading('Checking what the restore would do'));
+    api('restore_plan', { name: name }).then(function (p) {
+      m.body.innerHTML = '';
+      if (!p.ok) { m.body.appendChild(h('div', { class: 'banner bad' }, p.error || 'This backup cannot be restored.')); return; }
+      var moved = p.folders.filter(function (f) { return f.exists; }).length;
+      var rec = p.containers.filter(function (c) { return c.action === 'recreate'; }), miss = p.containers.filter(function (c) { return c.action === 'missing'; });
+      var nets = p.networks.filter(function (n) { return !n.exists; });
+      m.body.appendChild(h('p', null, 'From ' + when(p.at) + ' (' + bytes(p.size) + ', about ' + bytes(p.need) + ' unpacked' + (p.free != null ? ', ' + bytes(p.free) + ' free' : '') + ').'));
+      var ul = h('ul', { class: 'sm' });
+      ul.appendChild(h('li', null, p.folders.length + ' appdata folders are put back' + (moved ? '; the ' + moved + ' that exist now are moved into the quarantine first (Cleanup tab), nothing is overwritten.' : '.')));
+      ul.appendChild(h('li', null, rec.length ? 'Recreated from their templates (images are downloaded if needed): ' + rec.map(function (c) { return c.name; }).join(', ') + '.' : 'All containers exist; the ones that ran are started again.'));
+      if (p.templates) ul.appendChild(h('li', null, p.templates + ' missing Docker templates are put back.'));
+      if (nets.length) ul.appendChild(h('li', null, 'Docker networks created: ' + nets.map(function (n) { return n.name; }).join(', ') + '.'));
+      if (miss.length) ul.appendChild(h('li', { class: 'warn' }, 'No template, so not recreated: ' + miss.map(function (c) { return c.name; }).join(', ') + '.'));
+      m.body.appendChild(ul);
+      m.body.appendChild(h('p', { class: 'muted sm' }, 'Containers that use appdata are offline while it runs. Data written since this backup is in the quarantine afterwards.'));
+      var cb = h('input', { type: 'checkbox' }); m.body.appendChild(h('label', { class: 'switch' }, cb, 'I want to put this backup back'));
+      var go = h('button', { class: 'btn pri', disabled: true, onclick: function () { m.close(); runJob('restore', [], 'Restore started', { name: name, confirm: '1' }); } }, 'Restore');
+      cb.onchange = function () { go.disabled = !cb.checked; };
+      m.foot.appendChild(h('button', { class: 'btn', onclick: m.close }, 'Cancel')); m.foot.appendChild(go);
+    });
   }
   function saveBackups() {
     /* only this tab's settings: unfinished edits on the Settings tab stay unfinished */
@@ -1076,7 +1105,7 @@
       h('div', null, fSwitch('Verify after update (state and health)', 'global.verify.enabled', 'A container without a health check is not treated as failed.'), fNum('Verification timeout', 'global.verify.timeout', 10, 900, null, 'seconds'), fSwitch('Check free disk space before pulling', 'global.disk_check'), fNum('Warn below', 'global.min_free_gb', 0, 500, null, 'GB free')),
       h('div', null, fNum('Retry failed pulls up to', 'global.retry.max', 0, 5, 'Only network/registry errors that left the container untouched are retried. Never retries once the container was changed.', 'times'), fNum('Retry interval', 'global.retry.interval_min', 5, 1440, null, 'minutes'), fSwitch('Remove the old image after a verified update', 'global.cleanup', 'Only that one image, and only if nothing else uses it. Never a broad prune.')))));
     w.appendChild(section('Docker: backups before update (optional)', h('div', null,
-      h('p', { class: 'muted sm' }, 'Turn on per container in its Settings. "Config" saves the template and container definition (small). "Image" saves the current image as a tar file (large). "Appdata" archives the container\'s host folders while it is still running, so databases may not be consistent: use a dedicated backup plugin for those.'),
+      h('p', { class: 'muted sm' }, 'Turn on per container in its Settings. "Config" saves the template and container definition (small). "Image" saves the current image as a tar file (large). "Appdata" archives the container\'s host folders while it is still running, so databases may not be consistent: use a dedicated backup plugin for those. Caches, logs and copies the apps rebuild (Plex, Emby, Jellyfin, Sonarr, Radarr and the like) are left out.'),
       h('div', { class: 'grid2' }, h('div', null, fSwitch('Enable backups', 'global.backup.enabled'), fText('Destination folder (under /mnt)', 'global.backup.dest', 'Example: /mnt/user/backups/unraid-swiss-manager', '/mnt/user/backups'), fNum('Keep newest', 'global.backup.retention', 1, 20, null, 'backups per container')),
         h('div', null, fSwitch('Config (template + settings)', 'global.backup.config'), fSwitch('Image (docker save)', 'global.backup.image'), fSwitch('Appdata folders (not application-consistent)', 'global.backup.appdata'), fSwitch('Backup is required: do not update if it fails', 'global.backup.required'))))));
     w.appendChild(section('Plugins', h('div', { class: 'grid2' },
