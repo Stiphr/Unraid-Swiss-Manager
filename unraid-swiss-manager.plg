@@ -13,7 +13,9 @@
 ###2026.11.20
 - Backups leave out the caches of Plex, Emby and Jellyfin: Cache, Codecs, Crash Reports, Diagnostics, Drivers, Logs and Updates of Plex; cache, logs, transcoding-temp and transcodes of Emby and Jellyfin; and a /cache or /transcode folder such a container maps inside the backed-up appdata. The server rebuilds them on its own. Libraries, settings, Metadata and watch history are kept. Applies to the scheduled appdata backup and to the backup before a container update; on the test server this is 1.3 GB less per backup.
 - A folder only counts as a media server's when its own files say so (Plex: Preferences.xml with Plug-in Support; Emby and Jellyfin: config/system.xml with their database), so another app's "cache" or "logs" folder is still backed up. Works with the linuxserver, binhex, hotio and official images.
-- The free-space check before a backup no longer counts these caches, and the backup result says how much was left out.
+- Also left out on their own: artwork (MediaCover), logs and own zip backups of Sonarr, Radarr, Lidarr, Prowlarr, Readarr and Whisparr; the AdGuard Home query log (statistics are kept); Immich machine-learning models (downloaded again); Plex's own dated copies of its database. Each app is recognised by its own files. On the test server all of this is 8.7 GB less per appdata backup.
+- "Leave these out" takes folders and files deeper in the appdata folder too (myapp/backups, logs/*.log). Before, anything with a slash was silently dropped.
+- The free-space check before a backup no longer counts what is left out, and the backup result says what was left out and how much.
 ###2026.11.05
 - Smarter Cleanup: older copies of an image are marked Safe when a newer unused copy of the same repository is kept (the newest stays as the rollback copy), and so are empty folders, empty volumes, copies of a folder (app.bak-0.9, app-old, app.v1.2) next to the original, and older versions of a folder whose original is gone. The image a container's Rollback button needs is never marked Safe. On a test server this took Smart cleanup (safe) from 1 item to 282.
 - New: the Docker build cache is listed and can be cleaned (unused cache only); on the test server it was 25 GB.
@@ -859,6 +861,17 @@ function dau_clean_value($spec, $v, $cur) {
       $o = [];
       foreach ($v as $n) if (is_string($n) && preg_match('#^[^/\x00-\x1F\x7F.][^/\x00-\x1F\x7F]{0,254}$#', $n) && !in_array($n, $o, true) && count($o) < 100) $o[] = $n;
       return $o;
+    case 'subpaths':   // folder or file inside a root: "plex", "qui/backups"; no "..", no leading slash, no hidden first part
+      if (!is_array($v)) return $cur;
+      $o = [];
+      foreach ($v as $n) {
+        if (!is_string($n)) continue;
+        $n = trim(trim($n), '/'); $parts = explode('/', $n);
+        $okp = $n !== '' && strlen($n) <= 1000 && $parts[0][0] !== '.' && !preg_match('#[\x00-\x1F\x7F]#', $n);
+        foreach ($parts as $q) if ($q === '' || $q === '.' || $q === '..' || strlen($q) > 255) $okp = false;
+        if ($okp && !in_array($n, $o, true) && count($o) < 100) $o[] = $n;
+      }
+      return $o;
     case 'names':
       if (!is_array($v)) return $cur;
       $o = [];
@@ -1104,7 +1117,7 @@ function dau_export_config() {
   return ['exported_at' => dau_ts_iso(dau_now()), 'plugin_version' => DAU_VERSION, 'secrets_included' => false, 'config' => $cfg];
 }
 ]]></INLINE>
-<SHA256>d1c206ee4db8ebefafc3ae891e86fbae0752f2fa8a5b893300216264b6b524a4</SHA256>
+<SHA256>c81c1ee3d961cb5d7bf5651d6b0953045135fb8cb93d37a98a3059c6b58ff8cb</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/schedule.php" Mode="0644">
@@ -1875,6 +1888,67 @@ function dau_media_cache_dirs(array $roots) {
 }
 
 /**
+ * Other files apps rebuild or that only copy what the backup already holds, found the same way (the app's own files
+ * must say which app it is): path => what it is.
+ *   Sonarr, Radarr, Lidarr, Prowlarr, Readarr, Whisparr (config.xml + <app>.db): MediaCover (artwork, downloaded again),
+ *     logs, logs.db, Sentry, and Backups (the app's own zip copies of the database the backup already holds)
+ *   AdGuard Home (AdGuardHome.yaml): the query log, querylog.json and its rotated copy (statistics are kept)
+ *   Immich (machine-learning/models): the machine-learning models, downloaded again when missing
+ *   Plex: its own dated copies of the library database (com.plexapp.plugins.library*.db-YYYY-MM-DD)
+ * @return array<string,string>
+ */
+function dau_app_skip_paths(array $roots) {
+  $arr = ['sonarr', 'radarr', 'lidarr', 'prowlarr', 'readarr', 'whisparr'];
+  $out = [];
+  $kids = function ($d) {
+    $r = [];
+    foreach (@scandir($d) ?: [] as $n) if ($n !== '.' && $n !== '..' && $n !== DAU_QDIR_NAME && is_dir("$d/$n") && !is_link("$d/$n")) $r[] = "$d/$n";
+    return $r;
+  };
+  $add = function ($p, $what) use (&$out) { if ((is_dir($p) || is_file($p)) && !is_link($p)) $out[$p] = $what; };
+  foreach ($roots as $root) {
+    $root = rtrim((string)$root, '/');
+    if ($root === '' || !is_dir($root)) continue;
+    $cands = [$root];
+    foreach ($kids($root) as $k) { $cands[] = $k; foreach ($kids($k) as $g) $cands[] = $g; }
+    foreach ($cands as $d) {
+      if (is_file("$d/config.xml")) foreach ($arr as $a) if (is_file("$d/$a.db")) {
+        foreach (['MediaCover', 'logs', 'logs.db', 'logs.db-shm', 'logs.db-wal', 'Sentry', 'Backups'] as $c) $add("$d/$c", 'artwork, logs and own backups of Sonarr, Radarr and the like');
+        break;
+      }
+      foreach (['config', 'conf', ''] as $cd) if (is_file(rtrim("$d/$cd", '/') . '/AdGuardHome.yaml')) {
+        foreach (['workingdir/data', 'work/data', 'data'] as $wd) foreach (glob("$d/$wd/querylog.json*") ?: [] as $f) $add($f, 'the AdGuard query log');
+        break;
+      }
+      if (is_dir("$d/machine-learning/models")) $add("$d/machine-learning/models", 'Immich machine-learning models');
+      foreach (["$d/Library/Application Support/Plex Media Server", "$d/Plex Media Server", $d] as $pms)
+        if (is_file("$pms/Preferences.xml") && is_dir("$pms/Plug-in Support/Databases"))
+          foreach (glob("$pms/Plug-in Support/Databases/com.plexapp.plugins.library*.db-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]") ?: [] as $f) $add($f, 'old copies of the Plex database');
+    }
+  }
+  return $out;
+}
+
+/**
+ * Everything a backup of $roots leaves out on its own: path => what it is. $mounts adds the /cache and /transcode
+ * folders Docker says a media server maps (scheduled backup only: the backup before an update drops those mounts itself).
+ * @return array<string,string>
+ */
+function dau_backup_skip(array $roots, $mounts = true) {
+  $out = [];
+  foreach (dau_media_cache_dirs($roots) as $p) $out[$p] = 'caches of Plex, Emby and Jellyfin';
+  if ($mounts) foreach (dau_media_cache_mounts($roots) as $p) $out[$p] = 'caches of Plex, Emby and Jellyfin';
+  return $out + dau_app_skip_paths($roots);
+}
+
+/** One line for the backup result: what was left out and how much. '' when nothing was. */
+function dau_backup_skip_note(array $skip, $bytes) {
+  if (!$skip) return '';
+  $what = array_values(array_unique(array_values($skip)));
+  return 'Left out, because the apps rebuild them or the backup already holds them: ' . implode('; ', $what) . ' (' . count($skip) . ' items' . ($bytes > 0 ? ', ' . dau_bytes_text($bytes) : '') . ').';
+}
+
+/**
  * Host folders inside $roots that a Plex, Emby or Jellyfin container maps to /cache, /transcode or /transcodes,
  * written as they appear under the root that holds them (/mnt/cache/appdata/transcode becomes /mnt/user/appdata/transcode
  * when /mnt/user/appdata is backed up). [] when Docker does not answer.
@@ -1956,7 +2030,7 @@ function dau_backup_run(array $cfg, $name, array $inspect) {
     }
     if (!$paths) $res['skipped'][] = 'appdata: this container has no host folders under /mnt';
     else {
-      $skip = dau_media_cache_dirs($paths);      // Plex / Emby / Jellyfin caches: rebuilt by the server, often the largest part
+      $skip = array_keys(dau_backup_skip($paths, false));      // caches, logs and copies the apps rebuild: often the largest part
       $size = max(0.0, dau_du_total($paths) - dau_du_total($skip));
       if ($need($size, 'appdata')) {
         $f = "$dir/$stamp-appdata.tar.gz"; $tmp = "$dir/.$stamp-appdata.tar.gz.partial";   // renamed only when complete: an interrupted tar never looks like a backup
@@ -1983,7 +2057,7 @@ function dau_backup_prune($dir, $keep) {
   foreach (array_slice($sets, $keep, null, true) as $files) foreach ($files as $f) @unlink($f);
 }
 ]]></INLINE>
-<SHA256>0191e10267c5c8edbc4dd653396244b86736118a5041f3e01cfd98fc09fa9245</SHA256>
+<SHA256>59977c2054d5c254531ab138770b2486a44f5a6c8053b5a189876e95d70796bd</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/backups.php" Mode="0644">
@@ -2007,7 +2081,7 @@ function dau_bk_label($kind) { return $kind === 'flash' ? 'Boot drive (flash)' :
 function dau_bk_spec() {
   $one = ['schedule' => ['enum', ['off', 'weekly', 'monthly']], 'weekday' => ['int', 0, 6], 'monthday' => ['int', 1, 28], 'time' => ['time'],
           'dest' => ['path'], 'keep' => ['int', 1, 3]];
-  return ['appdata' => ['obj', $one + ['before_update' => ['bool'], 'required' => ['bool'], 'stop_containers' => ['bool'], 'exclude' => ['folders']]], 'flash' => ['obj', $one]];
+  return ['appdata' => ['obj', $one + ['before_update' => ['bool'], 'required' => ['bool'], 'stop_containers' => ['bool'], 'exclude' => ['subpaths']]], 'flash' => ['obj', $one]];
 }
 
 function dau_bk_defaults() {
@@ -2161,10 +2235,11 @@ function dau_bk_run($kind, array $cfg) {
     if ($r['timeout'] || trim($r['out']) === '') $res['notes'][] = 'The size of ' . $s . ' could not be measured, so free space was not checked for it.';
     $size += (float)preg_replace('/\s.*/s', '', trim($r['out']));
   }
-  $skip = $kind === 'appdata' ? array_values(array_unique(array_merge(dau_media_cache_dirs($srcs), dau_media_cache_mounts($srcs)))) : [];     // Plex / Emby / Jellyfin caches: rebuilt by the server, often the largest part
+  $skipped = $kind === 'appdata' ? dau_backup_skip($srcs) : [];     // caches, logs and copies the apps rebuild: often the largest part
+  $skip = array_keys($skipped);
   if ($skip) {
     $cache = dau_du_total($skip); $size = max(0.0, $size - $cache);
-    $res['notes'][] = 'Left out: the caches of Plex, Emby or Jellyfin (' . count($skip) . ' folders' . ($cache > 0 ? ', ' . dau_bytes_text($cache) : '') . '). The server rebuilds them.';
+    $res['notes'][] = dau_backup_skip_note($skipped, $cache);
   }
   $free = dau_backup_free($dir);
   if ($free !== null && $size > 0 && $size > $free) { $res['error'] = 'Not enough free space at the destination: about ' . dau_bytes_text($size) . ' to back up, ' . dau_bytes_text($free) . ' free. Nothing was changed.'; return $res; }
@@ -2269,7 +2344,7 @@ function dau_bk_before_update(array &$J, $what) {
   return true;
 }
 ]]></INLINE>
-<SHA256>f7791fff753e8e8d5ea1c82e72eab040e77e3ec5bfc29d2be33fcda5c597f386</SHA256>
+<SHA256>f9647b94f2f0a696be34e645acd41138aae567b62b4a94c82392916dac5cedfc</SHA256>
 </FILE>
 
 <FILE Name="&emhttp;/include/docker.php" Mode="0644">
@@ -6668,7 +6743,7 @@ exit(64);
     p.appendChild(h('div', { class: 'fld' }, h('label', null, 'How many to keep'), kp, h('span', { class: 'hint' }, 'After a new backup has finished successfully, older ones beyond this number are deleted. The newest one is never deleted, and a failed backup deletes nothing. Room for one extra copy is needed while it runs.')));
     if (k === 'appdata') {
       var t = h('textarea', { rows: 3, spellcheck: 'false', 'aria-label': 'Folders to leave out', style: 'width:100%;max-width:420px;font-family:ui-monospace,Menlo,Consolas,monospace', oninput: function () { b.exclude = t.value.split('\n').map(function (x) { return x.trim(); }).filter(Boolean); } }, (b.exclude || []).join('\n'));
-      p.appendChild(h('div', { class: 'fld' }, h('label', null, 'Leave these folders out (optional)'), t, h('span', { class: 'hint' }, 'One folder name per line, directly inside the appdata folder. The caches of Plex, Emby and Jellyfin (Cache, Codecs, Logs, transcodes and the like) are always left out: the server rebuilds them. Their libraries, settings and Metadata are kept.')));
+      p.appendChild(h('div', { class: 'fld' }, h('label', null, 'Also leave these out (optional)'), t, h('span', { class: 'hint' }, 'One per line: a folder inside the appdata folder (myapp) or a folder or file deeper in it (myapp/backups). * matches any name. Left out on their own, because the apps rebuild them or the backup already holds them: the caches of Plex, Emby and Jellyfin; artwork, logs and own backups of Sonarr, Radarr and the like; the AdGuard query log; Immich machine-learning models; old copies of the Plex database. Libraries, settings and Metadata are kept.')));
     }
     /* actions */
     var why = info && info.problem ? info.problem : busy ? 'Another job is running. Wait until it has finished.' : dirty ? 'Save your changes first.' : '';
@@ -6715,7 +6790,7 @@ exit(64);
       h('div', null, fSwitch('Verify after update (state and health)', 'global.verify.enabled', 'A container without a health check is not treated as failed.'), fNum('Verification timeout', 'global.verify.timeout', 10, 900, null, 'seconds'), fSwitch('Check free disk space before pulling', 'global.disk_check'), fNum('Warn below', 'global.min_free_gb', 0, 500, null, 'GB free')),
       h('div', null, fNum('Retry failed pulls up to', 'global.retry.max', 0, 5, 'Only network/registry errors that left the container untouched are retried. Never retries once the container was changed.', 'times'), fNum('Retry interval', 'global.retry.interval_min', 5, 1440, null, 'minutes'), fSwitch('Remove the old image after a verified update', 'global.cleanup', 'Only that one image, and only if nothing else uses it. Never a broad prune.')))));
     w.appendChild(section('Docker: backups before update (optional)', h('div', null,
-      h('p', { class: 'muted sm' }, 'Turn on per container in its Settings. "Config" saves the template and container definition (small). "Image" saves the current image as a tar file (large). "Appdata" archives the container\'s host folders while it is still running, so databases may not be consistent: use a dedicated backup plugin for those. The caches of Plex, Emby and Jellyfin are left out.'),
+      h('p', { class: 'muted sm' }, 'Turn on per container in its Settings. "Config" saves the template and container definition (small). "Image" saves the current image as a tar file (large). "Appdata" archives the container\'s host folders while it is still running, so databases may not be consistent: use a dedicated backup plugin for those. Caches, logs and copies the apps rebuild (Plex, Emby, Jellyfin, Sonarr, Radarr and the like) are left out.'),
       h('div', { class: 'grid2' }, h('div', null, fSwitch('Enable backups', 'global.backup.enabled'), fText('Destination folder (under /mnt)', 'global.backup.dest', 'Example: /mnt/user/backups/unraid-swiss-manager', '/mnt/user/backups'), fNum('Keep newest', 'global.backup.retention', 1, 20, null, 'backups per container')),
         h('div', null, fSwitch('Config (template + settings)', 'global.backup.config'), fSwitch('Image (docker save)', 'global.backup.image'), fSwitch('Appdata folders (not application-consistent)', 'global.backup.appdata'), fSwitch('Backup is required: do not update if it fails', 'global.backup.required'))))));
     w.appendChild(section('Plugins', h('div', { class: 'grid2' },
@@ -6890,7 +6965,7 @@ exit(64);
   load('overview').then(function () { if (S.ov && S.ov.run.running) startPoll(); return deepLink(); });
 })();
 ]]></INLINE>
-<SHA256>c5191d4a05d848ac8557907f4903a2779b36a7b8d251a57de2709117fccbb09e</SHA256>
+<SHA256>6403bee055227d5b3076a28a5ac87011a03d3164f3f43394198c0361b6bebe76</SHA256>
 </FILE>
 
 <FILE Run="/bin/bash">

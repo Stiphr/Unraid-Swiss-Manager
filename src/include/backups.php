@@ -18,7 +18,7 @@ function dau_bk_label($kind) { return $kind === 'flash' ? 'Boot drive (flash)' :
 function dau_bk_spec() {
   $one = ['schedule' => ['enum', ['off', 'weekly', 'monthly']], 'weekday' => ['int', 0, 6], 'monthday' => ['int', 1, 28], 'time' => ['time'],
           'dest' => ['path'], 'keep' => ['int', 1, 3]];
-  return ['appdata' => ['obj', $one + ['before_update' => ['bool'], 'required' => ['bool'], 'stop_containers' => ['bool'], 'exclude' => ['folders']]], 'flash' => ['obj', $one]];
+  return ['appdata' => ['obj', $one + ['before_update' => ['bool'], 'required' => ['bool'], 'stop_containers' => ['bool'], 'exclude' => ['subpaths']]], 'flash' => ['obj', $one]];
 }
 
 function dau_bk_defaults() {
@@ -172,10 +172,11 @@ function dau_bk_run($kind, array $cfg) {
     if ($r['timeout'] || trim($r['out']) === '') $res['notes'][] = 'The size of ' . $s . ' could not be measured, so free space was not checked for it.';
     $size += (float)preg_replace('/\s.*/s', '', trim($r['out']));
   }
-  $skip = $kind === 'appdata' ? array_values(array_unique(array_merge(dau_media_cache_dirs($srcs), dau_media_cache_mounts($srcs)))) : [];     // Plex / Emby / Jellyfin caches: rebuilt by the server, often the largest part
+  $skipped = $kind === 'appdata' ? dau_backup_skip($srcs) : [];     // caches, logs and copies the apps rebuild: often the largest part
+  $skip = array_keys($skipped);
   if ($skip) {
     $cache = dau_du_total($skip); $size = max(0.0, $size - $cache);
-    $res['notes'][] = 'Left out: the caches of Plex, Emby or Jellyfin (' . count($skip) . ' folders' . ($cache > 0 ? ', ' . dau_bytes_text($cache) : '') . '). The server rebuilds them.';
+    $res['notes'][] = dau_backup_skip_note($skipped, $cache);
   }
   $free = dau_backup_free($dir);
   if ($free !== null && $size > 0 && $size > $free) { $res['error'] = 'Not enough free space at the destination: about ' . dau_bytes_text($size) . ' to back up, ' . dau_bytes_text($free) . ' free. Nothing was changed.'; return $res; }

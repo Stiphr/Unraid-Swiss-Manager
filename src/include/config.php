@@ -133,6 +133,17 @@ function dau_clean_value($spec, $v, $cur) {
       $o = [];
       foreach ($v as $n) if (is_string($n) && preg_match('#^[^/\x00-\x1F\x7F.][^/\x00-\x1F\x7F]{0,254}$#', $n) && !in_array($n, $o, true) && count($o) < 100) $o[] = $n;
       return $o;
+    case 'subpaths':   // folder or file inside a root: "plex", "qui/backups"; no "..", no leading slash, no hidden first part
+      if (!is_array($v)) return $cur;
+      $o = [];
+      foreach ($v as $n) {
+        if (!is_string($n)) continue;
+        $n = trim(trim($n), '/'); $parts = explode('/', $n);
+        $okp = $n !== '' && strlen($n) <= 1000 && $parts[0][0] !== '.' && !preg_match('#[\x00-\x1F\x7F]#', $n);
+        foreach ($parts as $q) if ($q === '' || $q === '.' || $q === '..' || strlen($q) > 255) $okp = false;
+        if ($okp && !in_array($n, $o, true) && count($o) < 100) $o[] = $n;
+      }
+      return $o;
     case 'names':
       if (!is_array($v)) return $cur;
       $o = [];

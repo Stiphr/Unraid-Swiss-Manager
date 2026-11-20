@@ -51,6 +51,67 @@ function dau_media_cache_dirs(array $roots) {
 }
 
 /**
+ * Other files apps rebuild or that only copy what the backup already holds, found the same way (the app's own files
+ * must say which app it is): path => what it is.
+ *   Sonarr, Radarr, Lidarr, Prowlarr, Readarr, Whisparr (config.xml + <app>.db): MediaCover (artwork, downloaded again),
+ *     logs, logs.db, Sentry, and Backups (the app's own zip copies of the database the backup already holds)
+ *   AdGuard Home (AdGuardHome.yaml): the query log, querylog.json and its rotated copy (statistics are kept)
+ *   Immich (machine-learning/models): the machine-learning models, downloaded again when missing
+ *   Plex: its own dated copies of the library database (com.plexapp.plugins.library*.db-YYYY-MM-DD)
+ * @return array<string,string>
+ */
+function dau_app_skip_paths(array $roots) {
+  $arr = ['sonarr', 'radarr', 'lidarr', 'prowlarr', 'readarr', 'whisparr'];
+  $out = [];
+  $kids = function ($d) {
+    $r = [];
+    foreach (@scandir($d) ?: [] as $n) if ($n !== '.' && $n !== '..' && $n !== DAU_QDIR_NAME && is_dir("$d/$n") && !is_link("$d/$n")) $r[] = "$d/$n";
+    return $r;
+  };
+  $add = function ($p, $what) use (&$out) { if ((is_dir($p) || is_file($p)) && !is_link($p)) $out[$p] = $what; };
+  foreach ($roots as $root) {
+    $root = rtrim((string)$root, '/');
+    if ($root === '' || !is_dir($root)) continue;
+    $cands = [$root];
+    foreach ($kids($root) as $k) { $cands[] = $k; foreach ($kids($k) as $g) $cands[] = $g; }
+    foreach ($cands as $d) {
+      if (is_file("$d/config.xml")) foreach ($arr as $a) if (is_file("$d/$a.db")) {
+        foreach (['MediaCover', 'logs', 'logs.db', 'logs.db-shm', 'logs.db-wal', 'Sentry', 'Backups'] as $c) $add("$d/$c", 'artwork, logs and own backups of Sonarr, Radarr and the like');
+        break;
+      }
+      foreach (['config', 'conf', ''] as $cd) if (is_file(rtrim("$d/$cd", '/') . '/AdGuardHome.yaml')) {
+        foreach (['workingdir/data', 'work/data', 'data'] as $wd) foreach (glob("$d/$wd/querylog.json*") ?: [] as $f) $add($f, 'the AdGuard query log');
+        break;
+      }
+      if (is_dir("$d/machine-learning/models")) $add("$d/machine-learning/models", 'Immich machine-learning models');
+      foreach (["$d/Library/Application Support/Plex Media Server", "$d/Plex Media Server", $d] as $pms)
+        if (is_file("$pms/Preferences.xml") && is_dir("$pms/Plug-in Support/Databases"))
+          foreach (glob("$pms/Plug-in Support/Databases/com.plexapp.plugins.library*.db-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]") ?: [] as $f) $add($f, 'old copies of the Plex database');
+    }
+  }
+  return $out;
+}
+
+/**
+ * Everything a backup of $roots leaves out on its own: path => what it is. $mounts adds the /cache and /transcode
+ * folders Docker says a media server maps (scheduled backup only: the backup before an update drops those mounts itself).
+ * @return array<string,string>
+ */
+function dau_backup_skip(array $roots, $mounts = true) {
+  $out = [];
+  foreach (dau_media_cache_dirs($roots) as $p) $out[$p] = 'caches of Plex, Emby and Jellyfin';
+  if ($mounts) foreach (dau_media_cache_mounts($roots) as $p) $out[$p] = 'caches of Plex, Emby and Jellyfin';
+  return $out + dau_app_skip_paths($roots);
+}
+
+/** One line for the backup result: what was left out and how much. '' when nothing was. */
+function dau_backup_skip_note(array $skip, $bytes) {
+  if (!$skip) return '';
+  $what = array_values(array_unique(array_values($skip)));
+  return 'Left out, because the apps rebuild them or the backup already holds them: ' . implode('; ', $what) . ' (' . count($skip) . ' items' . ($bytes > 0 ? ', ' . dau_bytes_text($bytes) : '') . ').';
+}
+
+/**
  * Host folders inside $roots that a Plex, Emby or Jellyfin container maps to /cache, /transcode or /transcodes,
  * written as they appear under the root that holds them (/mnt/cache/appdata/transcode becomes /mnt/user/appdata/transcode
  * when /mnt/user/appdata is backed up). [] when Docker does not answer.
@@ -132,7 +193,7 @@ function dau_backup_run(array $cfg, $name, array $inspect) {
     }
     if (!$paths) $res['skipped'][] = 'appdata: this container has no host folders under /mnt';
     else {
-      $skip = dau_media_cache_dirs($paths);      // Plex / Emby / Jellyfin caches: rebuilt by the server, often the largest part
+      $skip = array_keys(dau_backup_skip($paths, false));      // caches, logs and copies the apps rebuild: often the largest part
       $size = max(0.0, dau_du_total($paths) - dau_du_total($skip));
       if ($need($size, 'appdata')) {
         $f = "$dir/$stamp-appdata.tar.gz"; $tmp = "$dir/.$stamp-appdata.tar.gz.partial";   // renamed only when complete: an interrupted tar never looks like a backup

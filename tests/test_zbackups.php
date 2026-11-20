@@ -31,8 +31,9 @@ t('backups: settings are validated (keep 1-3, schedule list, destination under /
   $n = dau_sanitize_config(['backups' => ['appdata' => ['keep' => 9, 'schedule' => 'hourly', 'dest' => '/etc/x', 'time' => '25:00'], 'flash' => ['keep' => 0, 'schedule' => 'monthly', 'monthday' => 40]]], $c);
   eq($n['backups']['appdata']['keep'], 3); eq($n['backups']['appdata']['schedule'], 'off', 'unknown schedule ignored'); eq($n['backups']['appdata']['dest'], '', 'outside /mnt refused'); eq($n['backups']['appdata']['time'], '03:00');
   eq($n['backups']['flash']['keep'], 1); eq($n['backups']['flash']['schedule'], 'monthly'); eq($n['backups']['flash']['monthday'], 28);
-  $n = dau_sanitize_config(['backups' => ['appdata' => ['before_update' => true, 'required' => true, 'exclude' => ['plex-cache', '../etc', 'a/b']]]], $c);
-  ok($n['backups']['appdata']['before_update'] && $n['backups']['appdata']['required']); eq($n['backups']['appdata']['exclude'], ['plex-cache'], 'folder names only');
+  $n = dau_sanitize_config(['backups' => ['appdata' => ['before_update' => true, 'required' => true, 'exclude' => ['plex-cache', '../etc', 'a/b', '/qui/backups/', 'x/../y', '.hidden', 'app/.cache', "a\nb", 'a//b', 'plex-cache', 'logs/*.log']]]], $c);
+  ok($n['backups']['appdata']['before_update'] && $n['backups']['appdata']['required']);
+  eq($n['backups']['appdata']['exclude'], ['plex-cache', 'a/b', 'qui/backups', 'app/.cache', 'logs/*.log'], 'paths inside the appdata folder; never .., a hidden first part, empty parts or control characters');
 });
 
 t('backups: destination checks', function () {
@@ -215,7 +216,7 @@ t('backups: the scheduled appdata backup leaves the media caches out and says so
   has($a, '--exclude=mnt/dau-test/appdata/plex/Library/Application Support/Plex Media Server/Cache'); has($a, '--exclude=mnt/dau-test/appdata/jellyfin/cache'); has($a, '--exclude=mnt/dau-test/appdata/EmbyServer/transcoding-temp');
   lacks($a, 'Metadata'); lacks($a, 'nextcloud');
   ok(strpos($a, '--exclude=mnt/dau-test/appdata/jellyfin/cache') < strpos($a, ' -- '), 'excludes come before the folders');
-  has(implode(' ', $r['notes']), 'Left out: the caches of Plex, Emby or Jellyfin (13 folders');
+  has(implode(' ', $r['notes']), 'Left out, because the apps rebuild them or the backup already holds them: caches of Plex, Emby and Jellyfin (13 items');
   $cfg = bkenv(); $r = dau_bk_run('appdata', $cfg); ok($r['ok'], $r['error']);
   lacks(implode(' ', $GLOBALS['TARS'][0]), 'Plex Media Server'); lacks(implode(' ', $r['notes']), 'Left out', 'no media server, no note');
 });
@@ -230,7 +231,7 @@ t('backups: the free-space check does not count the caches', function () {
     return null;
   });
   $r = dau_bk_run('appdata', $cfg); ok($r['ok'], $r['error']);
-  has(implode(' ', $r['notes']), 'The server rebuilds them.');
+  has(implode(' ', $r['notes']), 'the apps rebuild them');
   eq(dau_du_total([]), 0.0);
 });
 
@@ -273,4 +274,29 @@ t('backups: hotio\'s Plex (the appdata folder is the Plex folder itself) and a t
   $r = dau_bk_run('appdata', $cfg); ok($r['ok'], $r['error']);
   $a = implode(' ', $GLOBALS['TARS'][0]);
   has($a, '--exclude=mnt/dau-test/appdata/plex/Cache'); has($a, '--exclude=mnt/dau-test/appdata/transcode'); lacks($a, 'redis-cache'); lacks($a, 'tool/Cache');
+});
+
+t('backups: logs, artwork and copies other apps rebuild are left out, their databases and settings are kept', function () {
+  $cfg = bkenv(['appdata' => ['exclude' => ['qui/backups', 'big']]]); $root = '/mnt/dau-test/appdata';
+  $mk = function ($p, $file = null) { @mkdir($p, 0755, true); if ($file !== null) file_put_contents("$p/$file", 'x'); };
+  $mk("$root/sonarr", 'config.xml'); $mk("$root/sonarr", 'sonarr.db'); $mk("$root/sonarr", 'logs.db'); foreach (['MediaCover/1', 'logs', 'Backups/scheduled', 'Sentry'] as $c) $mk("$root/sonarr/$c");
+  $mk("$root/binhex-radarr/config", 'config.xml'); $mk("$root/binhex-radarr/config", 'radarr.db'); $mk("$root/binhex-radarr/config/MediaCover");
+  $mk("$root/other", 'config.xml'); $mk("$root/other/logs"); $mk("$root/other/Backups");   // config.xml alone is not Sonarr
+  $mk("$root/adguard/config", 'AdGuardHome.yaml'); $mk("$root/adguard/workingdir/data", 'querylog.json'); $mk("$root/adguard/workingdir/data", 'querylog.json.1'); $mk("$root/adguard/workingdir/data", 'stats.db');
+  $mk("$root/dns/workingdir/data", 'querylog.json');   // no AdGuardHome.yaml: kept
+  $mk("$root/immich/machine-learning/models/clip"); $mk("$root/immich/upload");
+  $pms = "$root/plex/Library/Application Support/Plex Media Server"; $mk($pms, 'Preferences.xml');
+  $db = "$pms/Plug-in Support/Databases"; $mk($db, 'com.plexapp.plugins.library.db'); $mk($db, 'com.plexapp.plugins.library.db-2025-05-06'); $mk($db, 'com.plexapp.plugins.library.blobs.db-2025-05-03'); $mk($db, 'com.plexapp.plugins.library.db-shm');
+  $mk("$root/qui/backups"); $mk("$root/qui", 'qui.db');
+  $s = dau_app_skip_paths([$root]); $p = array_keys($s); sort($p);
+  $want = ["$root/adguard/workingdir/data/querylog.json", "$root/adguard/workingdir/data/querylog.json.1", "$root/binhex-radarr/config/MediaCover", "$root/immich/machine-learning/models",
+    "$db/com.plexapp.plugins.library.blobs.db-2025-05-03", "$db/com.plexapp.plugins.library.db-2025-05-06",
+    "$root/sonarr/Backups", "$root/sonarr/MediaCover", "$root/sonarr/Sentry", "$root/sonarr/logs", "$root/sonarr/logs.db"];
+  sort($want); eq($p, $want);
+  eq($s["$root/adguard/workingdir/data/querylog.json"], 'the AdGuard query log');
+  $r = dau_bk_run('appdata', $cfg); ok($r['ok'], $r['error']);
+  $a = implode(' ', $GLOBALS['TARS'][0]);
+  has($a, '--exclude=mnt/dau-test/appdata/qui/backups'); has($a, '--exclude=mnt/dau-test/appdata/big'); has($a, '--exclude=mnt/dau-test/appdata/sonarr/MediaCover'); has($a, '--exclude=mnt/dau-test/appdata/immich/machine-learning/models');
+  lacks($a, 'sonarr.db '); lacks($a, 'stats.db'); lacks($a, 'library.db '); lacks($a, 'other/'); lacks($a, 'dns/'); lacks($a, 'immich/upload');
+  $n = implode(' ', $r['notes']); has($n, 'the AdGuard query log'); has($n, 'Immich machine-learning models'); has($n, 'old copies of the Plex database'); has($n, 'artwork, logs and own backups of Sonarr, Radarr and the like');
 });
