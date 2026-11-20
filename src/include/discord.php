@@ -152,6 +152,8 @@ function dau_discord_event_embed(array $ev, $server) {
     'os_verified'     => ['✅', 'OS update verified after reboot', 0x2ECC71],
     'os_unverified'   => ['❌', 'OS update not active after reboot', 0xE74C3C],
     'backup_done'     => ['💾', 'Backup completed', 0x2ECC71],
+    'restore_done'    => ['♻️', 'Restore completed', 0x2ECC71],
+    'restore_failed'  => ['🛑', 'Restore FAILED', 0xE74C3C],
     'backup_failed'   => ['❌', 'Backup FAILED', 0xE74C3C],
     'cleanup_report'  => ['🧹', 'Cleanup: things you can free', 0x3498DB],
     'cleanup_auto'    => ['🧹', 'Cleanup: Smart cleanup (safe) done', 0x2ECC71],

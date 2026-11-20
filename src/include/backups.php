@@ -149,7 +149,7 @@ function dau_bk_list($kind, $dest) {
 /** Keep the newest $keep archives (at least 1: the fresh copy is never removed). Returns how many were removed. */
 function dau_bk_prune($kind, $dest, $keep) {
   $keep = max(1, (int)$keep); $n = 0;
-  foreach (array_slice(dau_bk_list($kind, $dest), $keep) as $e) if (@unlink($e['file'])) $n++;
+  foreach (array_slice(dau_bk_list($kind, $dest), $keep) as $e) if (@unlink($e['file'])) { $n++; @unlink(dau_rs_sidecar($e['file'])); }
   foreach (glob(dau_bk_dir($kind, $dest) . '/.' . $kind . '-*.partial') ?: [] as $p) if (@filemtime($p) < dau_now() - 86400) @unlink($p);   // leftovers of an interrupted run
   return $n;
 }
@@ -188,8 +188,16 @@ function dau_bk_run($kind, array $cfg) {
     $argv[] = '--exclude=' . ltrim($s, '/') . '/' . DAU_QDIR_NAME;    // folders already set aside by Cleanup are not worth backing up again
   }
   foreach ($skip as $d) $argv[] = dau_tar_exclude($d);
+  $kit = null;
+  if ($kind === 'appdata') {      // the restore kit: what a one-click restore needs (templates, containers, networks), taken while everything still runs
+    $leftOut = array_values(array_filter((array)$b['exclude'], function ($x) { return strpos($x, '/') === false; }));
+    foreach ($skip as $d) foreach ($srcs as $s) if (dirname($d) === rtrim($s, '/')) $leftOut[] = basename($d);
+    $kit = dau_rs_kit($srcs, $leftOut, $size);
+    if (!dau_write_json(DAU_RS_KIT, $kit, true)) $kit = null;
+  }
   $argv[] = '--';
   foreach ($srcs as $s) $argv[] = ltrim($s, '/');
+  if ($kit) { $argv[] = DAU_RS_KIT_IN_TAR; if (is_dir(DAU_TEMPLATES)) $argv[] = DAU_RS_TPL_IN_TAR; }
   $stopped = [];
   if ($kind === 'appdata' && !empty($b['stop_containers'])) {
     $users = dau_bk_users($cfg, $srcs);
@@ -216,6 +224,7 @@ function dau_bk_run($kind, array $cfg) {
   }
   if (!@rename($tmp, $final)) { @unlink($tmp); $res['error'] = 'The finished archive could not be moved into place.'; return $res; }
   @chmod($final, 0600);
+  if ($kit && !dau_write_json(dau_rs_sidecar($final), $kit, true)) $res['notes'][] = 'The restore kit could not be saved next to the archive, so this backup can only be unpacked by hand.';
   $res['ok'] = true; $res['file'] = $final; $res['size'] = (int)@filesize($final); $res['seconds'] = max(0, dau_now() - $t0);
   if ($r['code'] === 1) $res['notes'][] = 'Some files changed while they were read (normal while anything writes to them).';
   $res['pruned'] = dau_bk_prune($kind, $b['dest'], $b['keep']);
